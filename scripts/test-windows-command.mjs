@@ -179,6 +179,13 @@ if (process.platform === 'win32') {
     await workspace.synchronize();
     assert.match(await fs.readFile(path.join(source, 'selected.txt'), 'utf8'), /explicit/);
   });
+  await test('LPAC cmd can move and delete copied files and folders', async ({ source, prepare }) => {
+    const workspace = await prepare();
+    const result = await execute(workspace, source, 'mkdir bulk & move safe.txt bulk\\moved.txt & del bulk\\moved.txt & rmdir bulk');
+    assert.equal(result.code, 0, result.output);
+    await workspace.synchronize();
+    assert.equal(await exists(path.join(source, 'safe.txt')), false);
+  });
   await test('LPAC PowerShell runs without profiles', async ({ source, prepare }) => {
     const workspace = await prepare();
     const result = await execute(workspace, source, `powershell -NoLogo -NoProfile -NonInteractive -Command "[IO.File]::WriteAllText('powershell.txt','powershell-ok')"`);

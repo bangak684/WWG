@@ -94,11 +94,11 @@ internal static class WindowsCommand {
     static void GrantEntry(string target, SecurityIdentifier identity, bool directory) {
         if (directory) {
             var security = Directory.GetAccessControl(target);
-            security.AddAccessRule(new FileSystemAccessRule(identity, FileSystemRights.FullControl, InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
+            security.AddAccessRule(new FileSystemAccessRule(identity, FileSystemRights.Modify | FileSystemRights.DeleteSubdirectoriesAndFiles, InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
             Directory.SetAccessControl(target, security);
         } else {
             var security = File.GetAccessControl(target);
-            security.AddAccessRule(new FileSystemAccessRule(identity, FileSystemRights.FullControl, AccessControlType.Allow));
+            security.AddAccessRule(new FileSystemAccessRule(identity, FileSystemRights.Modify, AccessControlType.Allow));
             File.SetAccessControl(target, security);
         }
         IntPtr descriptor = IntPtr.Zero;
@@ -160,6 +160,9 @@ internal static class WindowsCommand {
             foreach (string text in new [] { "S-1-15-3-1", "S-1-15-3-3" }) { IntPtr value; Check(ConvertStringSidToSid(text, out value)); localSids.Add(value); capabilitySids.Add(value); }
             AddCapability("registryRead", capabilitySids, localSids);
             AddCapability("lpacInstrumentation", capabilitySids, localSids);
+            AddCapability("lpacCom", capabilitySids, localSids);
+            AddCapability("lpacAppExperience", capabilitySids, localSids);
+            AddCapability("lpacCryptoServices", capabilitySids, localSids);
             int sidSize = Marshal.SizeOf(typeof(SidAttributes));
             IntPtr values = Marshal.AllocHGlobal(sidSize * capabilitySids.Count); allocated.Add(values);
             for (int i = 0; i < capabilitySids.Count; i++) Marshal.StructureToPtr(new SidAttributes { Sid = capabilitySids[i], Attributes = 4 }, IntPtr.Add(values, i * sidSize), false);
