@@ -1,4 +1,5 @@
-import { promises as fs, constants } from 'node:fs';
+import { constants } from 'node:fs';
+import { diskFs as fs } from './disk-fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { Project, FileRead, FileEntry } from '../shared';
@@ -50,7 +51,9 @@ export async function resolveFile(project: Project, relative: string, allowMissi
   return target;
 }
 export async function listFiles(project: Project, relative: string): Promise<FileEntry[]> {
-  const directory = await fs.opendir(await resolveFile(project, relative));
+  const target = await resolveFile(project, relative);
+  if (!(await fs.lstat(target)).isDirectory()) throw new Error('파일 목록 조회에는 실제 폴더의 경로를 지정하세요.');
+  const directory = await fs.opendir(target);
   const entries: FileEntry[] = [];
   let scanned = 0;
   for await (const entry of directory) {
