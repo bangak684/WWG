@@ -88,16 +88,38 @@ internal static class WindowsCommand {
     }
     static void GrantWorkspace(string stage, IntPtr sid) {
         OrdinaryTree(stage);
-        var security = Directory.GetAccessControl(stage);
-        security.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(sid), FileSystemRights.FullControl, InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
-        Directory.SetAccessControl(stage, security);
+        var identity = new SecurityIdentifier(sid);
+        GrantEntry(stage, identity, true);
+    }
+    static void GrantEntry(string target, SecurityIdentifier identity, bool directory) {
+        if (directory) {
+            var security = Directory.GetAccessControl(target);
+            security.AddAccessRule(new FileSystemAccessRule(identity, FileSystemRights.FullControl, InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
+            Directory.SetAccessControl(target, security);
+        } else {
+            var security = File.GetAccessControl(target);
+            security.AddAccessRule(new FileSystemAccessRule(identity, FileSystemRights.FullControl, AccessControlType.Allow));
+            File.SetAccessControl(target, security);
+        }
         IntPtr descriptor = IntPtr.Zero;
         try {
             uint size; Check(ConvertStringSecurityDescriptorToSecurityDescriptor("S:(ML;OICI;NW;;;LW)", 1, out descriptor, out size));
             bool present, defaulted; IntPtr sacl; Check(GetSecurityDescriptorSacl(descriptor, out present, out sacl, out defaulted));
-            uint error = SetNamedSecurityInfo(stage, 1, 0x10, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, sacl);
+            uint error = SetNamedSecurityInfo(target, 1, 0x10, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, sacl);
             if (error != 0) throw new Win32Exception((int)error);
         } finally { if (descriptor != IntPtr.Zero) LocalFree(descriptor); }
+        if (directory) foreach (string entry in Directory.EnumerateFileSystemEntries(target)) GrantEntry(entry, identity, (File.GetAttributes(entry) & FileAttributes.Directory) != 0);
+    }
+    static void AddCapability(string name, List<IntPtr> values, List<IntPtr> owned) {
+        IntPtr groups = IntPtr.Zero, sids = IntPtr.Zero; uint groupCount = 0, count = 0;
+        try {
+            HResult(DeriveCapabilitySidsFromName(name, out groups, out groupCount, out sids, out count));
+            for (int i = 0; i < count; i++) { IntPtr value = Marshal.ReadIntPtr(sids, i * IntPtr.Size); values.Add(value); owned.Add(value); }
+        } finally {
+            for (int i = 0; i < groupCount; i++) LocalFree(Marshal.ReadIntPtr(groups, i * IntPtr.Size));
+            if (groups != IntPtr.Zero) LocalFree(groups);
+            if (sids != IntPtr.Zero) LocalFree(sids);
+        }
     }
     static bool ProbeRead(IntPtr token, string packageSid) {
         IntPtr descriptor = IntPtr.Zero, privileges = Marshal.AllocHGlobal(1024);
@@ -126,7 +148,6 @@ internal static class WindowsCommand {
         string cwd = Path.GetFullPath(request.cwd).TrimEnd(Path.DirectorySeparatorChar);
         if (!Within(cwd, stage) || stage == Path.GetPathRoot(stage).TrimEnd(Path.DirectorySeparatorChar)) throw new ArgumentException("Invalid workspace.");
         IntPtr sid = IntPtr.Zero, attributes = IntPtr.Zero, job = IntPtr.Zero, token = IntPtr.Zero;
-        IntPtr registryGroups = IntPtr.Zero, registrySids = IntPtr.Zero; uint groupCount = 0, registryCount = 0;
         var allocated = new List<IntPtr>(); var localSids = new List<IntPtr>();
         ProcessInfo process = new ProcessInfo(); bool resumed = false;
         try {
@@ -137,8 +158,8 @@ internal static class WindowsCommand {
             step = "derive runtime capabilities";
             var capabilitySids = new List<IntPtr>();
             foreach (string text in new [] { "S-1-15-3-1", "S-1-15-3-3" }) { IntPtr value; Check(ConvertStringSidToSid(text, out value)); localSids.Add(value); capabilitySids.Add(value); }
-            HResult(DeriveCapabilitySidsFromName("registryRead", out registryGroups, out groupCount, out registrySids, out registryCount));
-            for (int i = 0; i < registryCount; i++) capabilitySids.Add(Marshal.ReadIntPtr(registrySids, i * IntPtr.Size));
+            AddCapability("registryRead", capabilitySids, localSids);
+            AddCapability("lpacInstrumentation", capabilitySids, localSids);
             int sidSize = Marshal.SizeOf(typeof(SidAttributes));
             IntPtr values = Marshal.AllocHGlobal(sidSize * capabilitySids.Count); allocated.Add(values);
             for (int i = 0; i < capabilitySids.Count; i++) Marshal.StructureToPtr(new SidAttributes { Sid = capabilitySids[i], Attributes = 4 }, IntPtr.Add(values, i * sidSize), false);
@@ -207,10 +228,6 @@ internal static class WindowsCommand {
             if (attributes != IntPtr.Zero) { DeleteProcThreadAttributeList(attributes); Marshal.FreeHGlobal(attributes); }
             foreach (IntPtr memory in allocated) Marshal.FreeHGlobal(memory);
             foreach (IntPtr value in localSids) LocalFree(value);
-            for (int i = 0; i < registryCount; i++) LocalFree(Marshal.ReadIntPtr(registrySids, i * IntPtr.Size));
-            for (int i = 0; i < groupCount; i++) LocalFree(Marshal.ReadIntPtr(registryGroups, i * IntPtr.Size));
-            if (registrySids != IntPtr.Zero) LocalFree(registrySids);
-            if (registryGroups != IntPtr.Zero) LocalFree(registryGroups);
             if (sid != IntPtr.Zero) { FreeSid(sid); DeleteAppContainerProfile(request.profile); }
         }
     }

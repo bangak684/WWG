@@ -52,6 +52,15 @@ await test('fully accounted ordinary hard links work for bulk deletion', async (
   assert.equal(await exists(path.join(source, 'safe.txt')), false);
   assert.equal(await exists(path.join(source, 'second.txt')), false);
 });
+await test('hard-link groups fully inside multiple grants work for bulk deletion', async ({ source, second, prepare }) => {
+  await fs.link(path.join(source, 'safe.txt'), path.join(second, 'linked.txt'));
+  const workspace = await prepare();
+  await fs.unlink(workspace.mappedPath(path.join(source, 'safe.txt')));
+  await fs.unlink(workspace.mappedPath(path.join(second, 'linked.txt')));
+  await workspace.synchronize();
+  assert.equal(await exists(path.join(source, 'safe.txt')), false);
+  assert.equal(await exists(path.join(second, 'linked.txt')), false);
+});
 await test('junctions/symlinks do not bring outside files into the workspace', async ({ source, outside, prepare }) => {
   await fs.writeFile(path.join(outside, 'private.txt'), 'private');
   await fs.symlink(outside, path.join(source, 'alias'), process.platform === 'win32' ? 'junction' : 'dir');

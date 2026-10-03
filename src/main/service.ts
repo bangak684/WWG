@@ -378,7 +378,7 @@ export class Workspace extends EventEmitter {
     } catch (error) { await staged?.dispose(); throw error; }
     const runtime: Runtime = { process: child, output: '', bytes: 0, cancelled: false, reason: '' };
     this.processes.set(job.id, runtime);
-    const collect = (text: string): void => { runtime.output = (runtime.output + text).slice(-MAX_OUTPUT); this.outputChanged(); };
+    const collect = (text: string): void => { runtime.output = (staged ? staged.displayOutput(runtime.output + text) : runtime.output + text).slice(-MAX_OUTPUT); this.outputChanged(); };
     const decoders = [new StringDecoder('utf8'), new StringDecoder('utf8')];
     [child.stdout, child.stderr].forEach((stream, i) => stream?.on('data', (buffer: Buffer) => {
       runtime.bytes += buffer.length; collect(redact(decoders[i]!.write(buffer)));

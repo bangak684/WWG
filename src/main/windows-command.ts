@@ -13,6 +13,12 @@ const within = (value: string, root: string): boolean => key(value) === key(root
 const unsafe = (name: string): boolean => protectedName(name) || /[<>:"|?*\x00-\x1f]/.test(name) || /[. ]$/.test(name) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i.test(name);
 const same = (a: BigIntStats, b: BigIntStats): boolean => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeNs === b.mtimeNs && a.nlink === b.nlink;
 const check = (authorized: () => boolean): void => { if (!authorized()) throw new Error('Windows 명령 실행 또는 결과 반영 중 권한이 취소되었습니다.'); };
+function protectParents(relative: string, barriers: Set<string>): void {
+  for (let parent = path.dirname(relative);; parent = path.dirname(parent)) {
+    barriers.add(parent === '.' ? '' : parent);
+    if (parent === '.' || parent === '') break;
+  }
+}
 
 export function windowsRunnerPath(): string {
   const resources = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
@@ -59,15 +65,10 @@ async function digestFile(target: string, expected: BigIntStats, authorized: () 
 }
 
 /** Metadata only on excluded files. Incomplete hard-link groups and reparse aliases never get copied. */
-async function inventory(root: string, authorized: () => boolean, forbidden: string[], strict: boolean): Promise<{ tree: Tree; barriers: Set<string> }> {
+async function inventory(root: string, authorized: () => boolean, forbidden: string[], strict: boolean, deferHardLinks = false): Promise<{ tree: Tree; barriers: Set<string> }> {
   const tree: Tree = new Map(), barriers = new Set<string>();
   const pending = [''], links = new Map<string, string[]>(); let count = 0;
-  const barrier = (relative: string): void => {
-    for (let parent = path.dirname(relative);; parent = path.dirname(parent)) {
-      barriers.add(parent === '.' ? '' : parent);
-      if (parent === '.' || parent === '') break;
-    }
-  };
+  const barrier = (relative: string): void => protectParents(relative, barriers);
   while (pending.length) {
     check(authorized);
     const relative = pending.pop()!, target = path.join(root, relative);
@@ -97,7 +98,7 @@ async function inventory(root: string, authorized: () => boolean, forbidden: str
       }
     }
   }
-  for (const names of links.values()) if (strict || tree.get(names[0]!)!.stat.nlink !== BigInt(names.length)) {
+  for (const names of links.values()) if (strict || (!deferHardLinks && tree.get(names[0]!)!.stat.nlink !== BigInt(names.length))) {
     if (strict) throw new Error('명령 결과에 하드링크가 있어 원본에 반영하지 않았습니다.');
     for (const name of names) { tree.delete(name); barrier(name); }
   }
@@ -113,7 +114,7 @@ export class WindowsCommandWorkspace {
   static async prepare(roots: string[], dataDir: string, authorized: () => boolean, forbidden: string[] = []): Promise<WindowsCommandWorkspace> {
     const base = path.join(dataDir, 'command-workspaces');
     await fs.mkdir(base, { recursive: true, mode: 0o700 });
-    const workspace = new WindowsCommandWorkspace(await fs.mkdtemp(path.join(base, 'command-')), authorized);
+    const workspace = new WindowsCommandWorkspace(await fs.mkdtemp(path.join(await fs.realpath(base), 'command-')), authorized);
     try {
       const sorted = [...new Set(roots)].sort((a, b) => a.length - b.length), unique: string[] = [];
       for (const root of sorted) if (!unique.some(parent => within(root, parent))) unique.push(root);
@@ -121,14 +122,24 @@ export class WindowsCommandWorkspace {
         check(authorized);
         if (protectedPath(original) || forbidden.some(value => within(original, value))) throw new Error('보호 경로는 Windows 명령에 사용할 수 없습니다.');
         const copy = path.join(workspace.stage, 'folders', String(workspace.mappings.length));
-        const { tree: before, barriers } = await inventory(original, authorized, forbidden, false);
+        const { tree: before, barriers } = await inventory(original, authorized, forbidden, false, true);
         await fs.mkdir(copy, { recursive: true, mode: 0o700 });
+        workspace.mappings.push({ original, copy, before, barriers });
+      }
+      const links = new Map<string, { mapping: Mapping; relative: string; stat: BigIntStats }[]>();
+      for (const mapping of workspace.mappings) for (const [relative, entry] of mapping.before) if (!entry.directory && entry.stat.nlink > 1n) {
+        const identity = `${entry.stat.dev}:${entry.stat.ino}`, group = links.get(identity) ?? [];
+        group.push({ mapping, relative, stat: entry.stat }); links.set(identity, group);
+      }
+      for (const group of links.values()) if (group.some(entry => entry.stat.nlink !== BigInt(group.length))) {
+        for (const { mapping, relative } of group) { mapping.before.delete(relative); protectParents(relative, mapping.barriers); }
+      }
+      for (const { original, copy, before } of workspace.mappings) {
         for (const [relative, entry] of before) {
           if (!relative) continue;
           if (entry.directory) await fs.mkdir(path.join(copy, relative), { recursive: true, mode: 0o700 });
           else entry.hash = await digestFile(path.join(original, relative), entry.stat, authorized, path.join(copy, relative));
         }
-        workspace.mappings.push({ original, copy, before, barriers });
       }
       await fs.mkdir(path.join(workspace.stage, 'temp'), { mode: 0o700 });
       return workspace;
@@ -170,6 +181,13 @@ export class WindowsCommandWorkspace {
       }
     }
     return command;
+  }
+  displayOutput(output: string): string {
+    for (const mapping of [...this.mappings].sort((a,b) => b.copy.length-a.copy.length)) {
+      const source = mapping.copy.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      output = output.replace(new RegExp(source + '(?=[\\\\/"\'\\s&|<>)]|$)', 'gi'), () => mapping.original);
+    }
+    return output;
   }
   environment(selected: Record<string, string>): NodeJS.ProcessEnv {
     const system = process.env.SystemRoot || 'C:\\Windows';
