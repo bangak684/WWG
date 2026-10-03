@@ -72,6 +72,8 @@ internal static class WindowsCommand {
         public string cwd { get; set; }
         public string command { get; set; }
         public Dictionary<string, string> environment { get; set; }
+        public string[] originalRoots { get; set; }
+        public string[] excludedPaths { get; set; }
     }
     static void Check(bool result) { if (!result) throw new Win32Exception(Marshal.GetLastWin32Error()); }
     static void HResult(int result) { if (result < 0) Marshal.ThrowExceptionForHR(result); }
@@ -132,7 +134,18 @@ internal static class WindowsCommand {
             return status && (granted & 1) != 0;
         } finally { if (descriptor != IntPtr.Zero) LocalFree(descriptor); Marshal.FreeHGlobal(privileges); }
     }
-    static void VerifyLpac(IntPtr token, IntPtr appSid) {
+    static bool ProbePathRead(IntPtr token, string path) {
+        byte[] bytes = (File.GetAttributes(path) & FileAttributes.Directory) != 0 ? Directory.GetAccessControl(path).GetSecurityDescriptorBinaryForm() : File.GetAccessControl(path).GetSecurityDescriptorBinaryForm();
+        IntPtr descriptor = Marshal.AllocHGlobal(bytes.Length), privileges = Marshal.AllocHGlobal(1024);
+        try {
+            Marshal.Copy(bytes, 0, descriptor, bytes.Length);
+            var mapping = new GenericMapping { Read = 0x120089, Write = 0x120116, Execute = 0x1200a0, All = 0x1f01ff };
+            uint size = 1024, granted; bool status;
+            Check(AccessCheck(descriptor, token, 1, ref mapping, privileges, ref size, out granted, out status));
+            return status && (granted & 1) != 0;
+        } finally { Marshal.FreeHGlobal(descriptor); Marshal.FreeHGlobal(privileges); }
+    }
+    static void VerifyLpac(IntPtr token, IntPtr appSid, Request request) {
         int isContainer, returned; Check(GetTokenInformation(token, 29, out isContainer, 4, out returned));
         IntPtr duplicate = IntPtr.Zero;
         try {
@@ -140,6 +153,10 @@ internal static class WindowsCommand {
             // Class 46 is not implemented by GetTokenInformation on supported Windows builds.
             // Verify LPAC's actual access semantics: explicit app SID works, ALL_APPLICATION_PACKAGES does not.
             if (isContainer != 1 || !ProbeRead(duplicate, new SecurityIdentifier(appSid).Value) || ProbeRead(duplicate, "AC")) throw new IOException("Windows did not create the required LPAC sandbox.");
+            // Public/restricted-package ACLs must not allow reads of originals or secrets.
+            if (request.originalRoots == null) throw new IOException("Missing original workspace boundaries.");
+            foreach (string original in request.originalRoots) if (ProbePathRead(duplicate, original)) throw new IOException("Original folder permissions bypass isolation. Select a private project folder.");
+            if (request.excludedPaths != null) foreach (string excluded in request.excludedPaths) if (ProbePathRead(duplicate, excluded)) throw new IOException("Secret file permissions bypass isolation. Restrict the original file's OS permissions.");
         } finally { if (duplicate != IntPtr.Zero) CloseHandle(duplicate); }
     }
     static int Run(Request request) {
@@ -195,7 +212,7 @@ internal static class WindowsCommand {
             string script = "$ErrorActionPreference='Stop';[Console]::OutputEncoding=New-Object Text.UTF8Encoding $false;$OutputEncoding=[Console]::OutputEncoding;& {\n" + request.command + "\n};if(!$?){exit 1};if($null -ne $LASTEXITCODE){exit $LASTEXITCODE}";
             string encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
             step = "create suspended PowerShell";
-            Check(CreateProcess(executable, new StringBuilder("\"" + executable + "\" -NoLogo -NoProfile -NonInteractive -EncodedCommand " + encoded), IntPtr.Zero, IntPtr.Zero, true, 0x00080000 | 0x00000004 | 0x00000400 | 0x08000000, environmentBlock, cwd, ref startup, out process));
+            Check(CreateProcess(executable, new StringBuilder("\"" + executable + "\" -NoLogo -NoProfile -NonInteractive -OutputFormat Text -EncodedCommand " + encoded), IntPtr.Zero, IntPtr.Zero, true, 0x00080000 | 0x00000004 | 0x00000400 | 0x08000000, environmentBlock, cwd, ref startup, out process));
             step = "contain process tree";
             job = CreateJobObject(IntPtr.Zero, null); if (job == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
             var limits = new ExtendedLimits { Basic = new BasicLimits { Flags = 0x2000 } };
@@ -203,7 +220,7 @@ internal static class WindowsCommand {
             Check(AssignProcessToJobObject(job, process.Process));
             step = "verify LPAC token";
             Check(OpenProcessToken(process.Process, 10, out token));
-            VerifyLpac(token, sid);
+            VerifyLpac(token, sid, request);
             step = "execute command";
             if (ResumeThread(process.Thread) == uint.MaxValue) throw new Win32Exception(Marshal.GetLastWin32Error());
             resumed = true;
@@ -243,7 +260,7 @@ internal static class WindowsCommand {
             Console.OutputEncoding = new UTF8Encoding(false);
             if (args.Length == 2 && args[0] == "--cleanup" && System.Text.RegularExpressions.Regex.IsMatch(args[1], "^WWG\\.Command\\.[a-f0-9-]{36}$")) { DeleteAppContainerProfile(args[1]); return 0; }
             if (args.Length != 0) throw new ArgumentException("Unknown launcher option.");
-            var json = new JavaScriptSerializer { MaxJsonLength = 131072 };
+            var json = new JavaScriptSerializer { MaxJsonLength = 32 * 1024 * 1024 };
             return Run(json.Deserialize<Request>(Console.In.ReadToEnd()));
         } catch (Exception error) { Console.Error.WriteLine("[WWG Windows sandbox: " + step + "] " + error.Message); return 125; }
     }

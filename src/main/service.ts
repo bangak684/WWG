@@ -392,7 +392,7 @@ export class Workspace extends EventEmitter {
       if (staged && !runtime.cancelled && code !== null && code !== 125) {
         if (!this.allowed(job)) throw new Error('결과 반영 전에 접근 권한이 취소되었습니다.');
         try { await staged.synchronize(); }
-        catch (error) { return { state: 'failed', output: (runtime.output + '\n[Windows 결과 반영 실패: ' + (error as Error).message + ']').slice(-MAX_OUTPUT), code }; }
+        catch (error) { return { state: runtime.cancelled || !this.allowed(job) ? 'cancelled' : 'failed', output: (runtime.output + '\n[Windows 결과 반영 실패: ' + (error as Error).message + (staged.hasPublishedChanges ? ' 이미 반영된 변경은 유지됩니다. 실제 파일을 확인하세요.' : '') + ']').slice(-MAX_OUTPUT), code }; }
       }
       return { state: runtime.cancelled ? 'cancelled' : code === 0 ? 'done' : 'failed', output: (runtime.output + (runtime.reason ? '\n[' + runtime.reason + ']' : '')).slice(-MAX_OUTPUT) || '(출력 없음)', code };
     } finally {

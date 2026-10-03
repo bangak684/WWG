@@ -7,7 +7,7 @@ import { protectedName, protectedPath } from './secret-policy';
 
 type Entry = { directory: boolean; stat: BigIntStats; hash?: string };
 type Tree = Map<string, Entry>;
-type Mapping = { original: string; copy: string; before: Tree; barriers: Set<string> };
+type Mapping = { original: string; copy: string; before: Tree; barriers: Set<string>; excluded: string[] };
 const key = (value: string): string => process.platform === 'win32' ? value.toLowerCase() : value;
 const within = (value: string, root: string): boolean => key(value) === key(root) || key(value).startsWith(key(root) + path.sep);
 const unsafe = (name: string): boolean => protectedName(name) || /[<>:"|?*\x00-\x1f]/.test(name) || /[. ]$/.test(name) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i.test(name);
@@ -65,8 +65,8 @@ async function digestFile(target: string, expected: BigIntStats, authorized: () 
 }
 
 /** Metadata only on excluded files. Incomplete hard-link groups and reparse aliases never get copied. */
-async function inventory(root: string, authorized: () => boolean, forbidden: string[], strict: boolean, deferHardLinks = false): Promise<{ tree: Tree; barriers: Set<string> }> {
-  const tree: Tree = new Map(), barriers = new Set<string>();
+async function inventory(root: string, authorized: () => boolean, forbidden: string[], strict: boolean, deferHardLinks = false): Promise<{ tree: Tree; barriers: Set<string>; excluded: string[] }> {
+  const tree: Tree = new Map(), barriers = new Set<string>(), excluded: string[] = [];
   const pending = [''], links = new Map<string, string[]>(); let count = 0;
   const barrier = (relative: string): void => protectParents(relative, barriers);
   while (pending.length) {
@@ -81,7 +81,7 @@ async function inventory(root: string, authorized: () => boolean, forbidden: str
       const child = path.join(relative, entry.name), full = path.join(root, child);
       if (unsafe(entry.name) || forbidden.some(value => within(full, value))) {
         if (strict) throw new Error('명령이 비밀파일 또는 금지된 경로를 생성했습니다. 원본에 반영하지 않았습니다.');
-        barrier(child); continue;
+        barrier(child); excluded.push(full); continue;
       }
       const stat = await fs.lstat(full, { bigint: true });
       if (stat.isSymbolicLink() || (!stat.isFile() && !stat.isDirectory())) {
@@ -100,15 +100,17 @@ async function inventory(root: string, authorized: () => boolean, forbidden: str
   }
   for (const names of links.values()) if (strict || (!deferHardLinks && tree.get(names[0]!)!.stat.nlink !== BigInt(names.length))) {
     if (strict) throw new Error('명령 결과에 하드링크가 있어 원본에 반영하지 않았습니다.');
-    for (const name of names) { tree.delete(name); barrier(name); }
+    for (const name of names) { tree.delete(name); barrier(name); excluded.push(path.join(root, name)); }
   }
-  return { tree, barriers };
+  return { tree, barriers, excluded };
 }
 
 export class WindowsCommandWorkspace {
   readonly profile = `WWG.Command.${randomUUID()}`;
   private mappings: Mapping[] = [];
   private runtimePaths: string[] = [];
+  private published = 0;
+  get hasPublishedChanges(): boolean { return this.published > 0; }
   private constructor(readonly stage: string, private authorized: () => boolean) {}
 
   static async prepare(roots: string[], dataDir: string, authorized: () => boolean, forbidden: string[] = []): Promise<WindowsCommandWorkspace> {
@@ -122,9 +124,9 @@ export class WindowsCommandWorkspace {
         check(authorized);
         if (protectedPath(original) || forbidden.some(value => within(original, value))) throw new Error('보호 경로는 Windows 명령에 사용할 수 없습니다.');
         const copy = path.join(workspace.stage, 'folders', String(workspace.mappings.length));
-        const { tree: before, barriers } = await inventory(original, authorized, forbidden, false, true);
+        const { tree: before, barriers, excluded } = await inventory(original, authorized, forbidden, false, true);
         await fs.mkdir(copy, { recursive: true, mode: 0o700 });
-        workspace.mappings.push({ original, copy, before, barriers });
+        workspace.mappings.push({ original, copy, before, barriers, excluded });
       }
       const links = new Map<string, { mapping: Mapping; relative: string; stat: BigIntStats }[]>();
       for (const mapping of workspace.mappings) for (const [relative, entry] of mapping.before) if (!entry.directory && entry.stat.nlink > 1n) {
@@ -132,7 +134,7 @@ export class WindowsCommandWorkspace {
         group.push({ mapping, relative, stat: entry.stat }); links.set(identity, group);
       }
       for (const group of links.values()) if (group.some(entry => entry.stat.nlink !== BigInt(group.length))) {
-        for (const { mapping, relative } of group) { mapping.before.delete(relative); protectParents(relative, mapping.barriers); }
+        for (const { mapping, relative } of group) { mapping.before.delete(relative); protectParents(relative, mapping.barriers); mapping.excluded.push(path.join(mapping.original, relative)); }
       }
       for (const { original, copy, before } of workspace.mappings) {
         for (const [relative, entry] of before) {
@@ -201,7 +203,7 @@ export class WindowsCommandWorkspace {
     requireWindowsRunner(); check(this.authorized);
     const child = spawn(windowsRunnerPath(), [], { windowsHide: true, shell: false, env: launcherEnvironment(), stdio: ['pipe', 'pipe', 'pipe'] });
     child.stdin!.on('error', () => {}); // A rejected launcher may close stdin before the JSON arrives.
-    child.stdin!.end(JSON.stringify({ profile: this.profile, stage: this.stage, cwd: this.mappedPath(cwd), command: this.mappedCommand(command), environment: this.environment(selected) }));
+    child.stdin!.end(JSON.stringify({ profile: this.profile, stage: this.stage, cwd: this.mappedPath(cwd), command: this.mappedCommand(command), environment: this.environment(selected), originalRoots: this.mappings.map(mapping => mapping.original), excludedPaths: this.mappings.flatMap(mapping => mapping.excluded) }));
     return child;
   }
 
@@ -227,7 +229,7 @@ export class WindowsCommandWorkspace {
       changes.push({ mapping, after, writes, deletes, removedDirs, addedDirs });
     }
     for (const { mapping, after, writes, deletes, removedDirs, addedDirs } of changes) {
-      for (const relative of addedDirs) { await this.checkOriginal(mapping, relative); check(this.authorized); await fs.mkdir(path.join(mapping.original, relative)); }
+      for (const relative of addedDirs) { await this.checkOriginal(mapping, relative); check(this.authorized); await fs.mkdir(path.join(mapping.original, relative)); this.published++; }
       for (const relative of writes) {
         const destination = path.join(mapping.original, relative), temp = path.join(path.dirname(destination), `.workroom-${randomUUID()}.tmp`);
         try {
@@ -236,13 +238,15 @@ export class WindowsCommandWorkspace {
           await this.checkOriginal(mapping, relative, mapping.before.get(relative)); check(this.authorized);
           if (mapping.before.has(relative)) await fs.rename(temp, destination);
           else { await fs.link(temp, destination); await fs.unlink(temp); }
+          this.published++;
         } finally { await fs.rm(temp, { force: true }); }
       }
-      for (const relative of deletes) { await this.checkOriginal(mapping, relative, mapping.before.get(relative)); check(this.authorized); await fs.unlink(path.join(mapping.original, relative)); }
+      for (const relative of deletes) { await this.checkOriginal(mapping, relative, mapping.before.get(relative)); check(this.authorized); await fs.unlink(path.join(mapping.original, relative)); this.published++; }
       for (const relative of removedDirs) {
         await this.checkOriginal(mapping, relative, mapping.before.get(relative)); check(this.authorized);
         // Never recursive: newly introduced secrets or concurrent user files survive.
         await fs.rmdir(path.join(mapping.original, relative));
+        this.published++;
       }
     }
   }

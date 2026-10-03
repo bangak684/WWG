@@ -154,6 +154,27 @@ async function execute(workspace, cwd, command, selected = {}) {
 }
 
 if (process.platform === 'win32') {
+  await test('NTFS alternate data streams are never copied', async ({ source, prepare }) => {
+    await fs.writeFile(path.join(source, 'safe.txt') + ':private', 'PRIVATE_ADS_SENTINEL');
+    const workspace = await prepare();
+    assert.equal(await exists(workspace.mappedPath(path.join(source, 'safe.txt')) + ':private'), false);
+    assert.equal(await fs.readFile(path.join(source, 'safe.txt') + ':private', 'utf8'), 'PRIVATE_ADS_SENTINEL');
+  });
+  await test('public package permissions on source folders cannot bypass isolation', async ({ source, prepare }) => {
+    await promisify(execFile)(path.join(process.env.SystemRoot, 'System32', 'icacls.exe'), [source, '/grant', '*S-1-15-2-2:(OI)(CI)RX']);
+    const workspace = await prepare();
+    const result = await execute(workspace, source, 'Write-Output UNEXPECTED_EXECUTION');
+    assert.equal(result.code, 125, result.output);
+    assert.match(result.output, /permissions bypass isolation/);
+    assert.ok(!result.output.includes('UNEXPECTED_EXECUTION'));
+  });
+  await test('public package permissions on secret files reject execution', async ({ source, prepare }) => {
+    await promisify(execFile)(path.join(process.env.SystemRoot, 'System32', 'icacls.exe'), [path.join(source, '.env'), '/grant', '*S-1-15-2-2:RX']);
+    const workspace = await prepare();
+    const result = await execute(workspace, source, 'Write-Output UNEXPECTED_EXECUTION');
+    assert.equal(result.code, 125, result.output);
+    assert.match(result.output, /permissions bypass isolation/);
+  });
   await test('LPAC cmd runs and safe writes synchronize', async ({ source, prepare }) => {
     const workspace = await prepare();
     const result = await execute(workspace, source, 'cmd /d /c "echo LPAC-cmd-ok> command.txt"');
@@ -196,6 +217,21 @@ if (process.platform === 'win32') {
     assert.equal(result.code, 0, result.output);
     await workspace.synchronize();
     assert.equal(await fs.readFile(path.join(source, 'powershell.txt'), 'utf8'), 'powershell-ok');
+  });
+  await test('Unicode scripts, file paths and output retain UTF-8 text', async ({ source, prepare }) => {
+    const workspace = await prepare();
+    const result = await execute(workspace, source, "[IO.File]::WriteAllText('한글 이름.txt','한글 내용'); Write-Output '한글 출력'");
+    assert.equal(result.code, 0, result.output);
+    assert.match(result.output, /한글 출력/);
+    await workspace.synchronize();
+    assert.equal(await fs.readFile(path.join(source, '한글 이름.txt'), 'utf8'), '한글 내용');
+  });
+  await test('COM shell activation cannot copy ungranted private files', async ({ source, outside, prepare }) => {
+    await fs.writeFile(path.join(outside, 'private.txt'), 'PRIVATE_BROKER_SENTINEL');
+    const workspace = await prepare();
+    const result = await execute(workspace, source, `try{$shell=New-Object -ComObject Shell.Application;$shell.NameSpace((Get-Location).Path).CopyHere('${path.join(outside, 'private.txt')}',20)}catch{};Start-Sleep -Seconds 1;if(Test-Path private.txt){exit 9}`);
+    assert.equal(result.code, 0, result.output);
+    assert.equal(await exists(workspace.mappedPath(path.join(source, 'private.txt'))), false);
   });
   await test('LPAC standard Node.js runtime executes with no host PATH inheritance', async ({ source, prepare }) => {
     const workspace = await prepare();
