@@ -13,7 +13,9 @@ export interface Job {
 }
 export interface Receipt { id: string; requestId: string; projectId: string; taskId?: string; requestHash?: string; kind: Job['kind']; state: Job['state']; createdAt: number; updatedAt: number }
 export type TaskState = 'waiting' | 'pending' | 'queued' | 'running' | 'stopping' | 'done' | 'failed' | 'cancelled';
-export interface Task { id: string; title: string; counts: Record<Job['state'], number>; createdAt: number; updatedAt: number; cancelledAt?: number }
+export interface TaskCheckpoint { summary: string; nextSteps: string[]; updatedAt: number }
+export interface TaskMemory { jobId: string; taskId?: string; tool?: string; kind: Job['kind']; state: Job['state']; path?: string; command?: string; output: string; resultHash?: string; updatedAt: number }
+export interface Task { id: string; title: string; counts: Record<Job['state'], number>; memory: TaskMemory[]; createdAt: number; updatedAt: number; cancelledAt?: number; checkpoint?: TaskCheckpoint; resumedFrom?: string }
 export interface TaskSnapshot extends Task { state: TaskState; totalRequests: number; retainedRequests: number }
 export interface Snapshot {
   folders: FolderScope[]; approvalMode: ApprovalMode; environmentNames: string[]; rememberAutomatic: boolean; jobs: Job[]; tasks: TaskSnapshot[];
