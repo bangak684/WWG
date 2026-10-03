@@ -1,5 +1,4 @@
 import type { Job, Task, TaskState } from '../shared';
-import path from 'node:path';
 
 export const emptyTaskCounts = (): Task['counts'] => ({ pending: 0, queued: 0, running: 0, done: 0, failed: 0, declined: 0, cancelled: 0 });
 export function taskState(task: Task): TaskState {
@@ -25,10 +24,5 @@ export function syncTaskCounts(previous: Job[], current: Job[], tasks: Task[]): 
     if (old) task.counts[old.state]--;
     task.counts[job.state]++;
     task.updatedAt = Math.max(task.updatedAt, job.updatedAt);
-    tasks.unshift(tasks.splice(tasks.indexOf(task),1)[0]!);
-    if (['write','delete','command'].includes(job.kind) && ['done','failed','declined','cancelled'].includes(job.state)) {
-      const memory={jobId:job.id,taskId:task.id,tool:job.tool,kind:job.kind,state:job.state,path:job.kind!=='command'&&job.directory&&job.path?path.resolve(job.directory,job.path):job.directory,command:job.command?.slice(0,2000),output:job.output.slice(-1000),resultHash:job.resultHash,updatedAt:job.updatedAt};
-      task.memory=[memory,...task.memory.filter(entry=>entry.jobId!==job.id)].slice(0,20);
-    }
   }
 }

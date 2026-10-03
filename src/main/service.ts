@@ -76,35 +76,19 @@ export class Workspace extends EventEmitter {
     return { ...task, state:taskState(task), totalRequests:Object.values(task.counts).reduce((sum,count)=>sum+count,0), retainedRequests:this.store.data.jobs.filter(job=>job.taskId===id).length };
   }
   taskSnapshots(): TaskSnapshot[] { return this.store.data.tasks.map(task=>this.taskSnapshot(task.id)).sort((a,b)=>b.updatedAt-a.updatedAt); }
-  async createTask(requestId: string, title: string, resumeFrom?: string): Promise<TaskSnapshot> {
+  async createTask(requestId: string, title: string): Promise<TaskSnapshot> {
     if (this.paused || this.closing) throw new Error('WWG 연결이 일시 정지되어 있습니다.');
     const trimmed = title.trim();
     if (!trimmed || trimmed.length > 200 || /[\x00-\x1f\x7f]/.test(trimmed)) throw new Error('작업 이름은 1~200자의 한 줄로 지정하세요.');
     await this.store.update(d => {
       if (this.paused || this.closing) throw new Error('WWG 연결이 일시 정지되어 있습니다.');
       const existing = d.tasks.find(task=>task.id===requestId);
-      if (existing) { if (existing.title !== trimmed || existing.resumedFrom !== resumeFrom) throw new Error('이미 사용한 requestId입니다. 다른 작업에는 새 UUID를 사용하세요.'); return; }
+      if (existing) { if (existing.title !== trimmed) throw new Error('이미 사용한 requestId입니다. 다른 작업에는 새 UUID를 사용하세요.'); return; }
       if (d.receipts.some(receipt=>receipt.taskId===requestId)) throw new Error('정리된 작업의 requestId입니다. 새 UUID로 작업을 만드세요.');
       if (d.tasks.length >= 100) throw new Error('작업은 최대 100개입니다. 완료 로그를 비운 뒤 새 작업을 만드세요.');
-      const source=resumeFrom?d.tasks.find(task=>task.id===resumeFrom):undefined;
-      if (resumeFrom && !source) throw new Error('이어갈 이전 작업을 찾을 수 없습니다.');
-      const now=Date.now(); d.tasks.unshift({id:requestId,title:trimmed,counts:emptyTaskCounts(),memory:source?structuredClone(source.memory):[],createdAt:now,updatedAt:now,resumedFrom:resumeFrom,checkpoint:source?.checkpoint?structuredClone(source.checkpoint):undefined});
+      const now=Date.now(); d.tasks.unshift({id:requestId,title:trimmed,counts:emptyTaskCounts(),createdAt:now,updatedAt:now});
     });
     return this.taskSnapshot(requestId);
-  }
-  async checkpointTask(id: string, summary: string, nextSteps: string[]): Promise<TaskSnapshot> {
-    this.task(id);
-    await this.store.update(d=>{
-      const task=d.tasks.find(task=>task.id===id); if(!task)throw new Error('작업을 찾을 수 없습니다.');
-      const now=Date.now(); task.checkpoint={summary,nextSteps:[...nextSteps],updatedAt:now};task.updatedAt=now;
-      d.tasks.unshift(d.tasks.splice(d.tasks.indexOf(task),1)[0]!);
-    });
-    return this.taskSnapshot(id);
-  }
-  recallTask(id?: string): TaskSnapshot {
-    const selected=id??this.taskSnapshots().find(task=>task.totalRequests>0||task.checkpoint||task.memory.length)?.id;
-    if(!selected)throw new Error('저장된 작업 기억이 없습니다.');
-    return this.taskSnapshot(selected);
   }
   async cancelTask(id: string): Promise<TaskSnapshot> {
     this.task(id);
@@ -451,7 +435,7 @@ export class Workspace extends EventEmitter {
   audit(tool: string, ok: boolean, label: string, output: string, hasJob = false, taskId?: string): void {
     if (this.closing) return;
     this.lastCall = Date.now();
-    if (!hasJob && !['wwg_status','job_get','logs_list','task_create','tasks_list','task_get','task_cancel','task_checkpoint','task_recall'].includes(tool)) {
+    if (!hasJob && !['wwg_status','job_get','logs_list','task_create','tasks_list','task_get','task_cancel'].includes(tool)) {
       const now = this.lastCall, id = randomUUID();
       const attached=taskId&&this.store.data.tasks.some(task=>task.id===taskId&&task.cancelledAt===undefined)?taskId:undefined;
       const job: Job = { id, requestId:id, projectId:'00000000-0000-4000-8000-000000000000', taskId:attached, kind: ['projects_list','folders_list','files_list','file_read','files_read_batch'].includes(tool) ? 'read' : 'request', tool, label:label.slice(0,8000), state:ok?'done':'failed', output:output.slice(-MAX_OUTPUT), createdAt:now, updatedAt:now };
