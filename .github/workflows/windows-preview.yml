@@ -36,6 +36,8 @@ jobs:
         run: node scripts/test-command-service.mjs
       - name: Package Windows x64 portable
         run: npm run package:win
+      - name: Check closing the Windows window
+        run: node scripts/test-window-close.mjs
       - name: Upload versioned release files
         uses: actions/upload-artifact@v4
         with:
