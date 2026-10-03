@@ -237,7 +237,11 @@ internal static class WindowsCommand {
             IntPtr environmentBlock = Marshal.StringToHGlobalUni(block.ToString()); allocated.Add(environmentBlock);
             string executable = Path.GetFullPath(request.powershell);
             if (!Within(executable, stage) || !File.Exists(executable)) throw new IOException("Filtered PowerShell runtime is missing.");
-            string script = "$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$OutputEncoding=[Console]::OutputEncoding;Set-Location -LiteralPath '" + cwd.Replace("'", "''") + "';& {\n" + request.command + "\n};if(!$?){exit 1};if($null -ne $LASTEXITCODE){exit $LASTEXITCODE}";
+            // FileSystemProvider normalizes through each ancestor when navigating a
+            // physical drive. Those ancestors deliberately remain inaccessible.
+            // A session-only drive rooted at the granted copy avoids that traversal.
+            string shellLocation = "WWG:\\" + cwd.Substring(stage.Length).TrimStart(Path.DirectorySeparatorChar);
+            string script = "$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$OutputEncoding=[Console]::OutputEncoding;New-PSDrive -Name WWG -PSProvider FileSystem -Root '" + stage.Replace("'", "''") + "' -Scope Global | Out-Null;Set-Location -LiteralPath '" + shellLocation.Replace("'", "''") + "';& {\n" + request.command + "\n};if(!$?){exit 1};if($null -ne $LASTEXITCODE){exit $LASTEXITCODE}";
             step = "create suspended PowerShell";
             Check(CreateProcess(executable, new StringBuilder(QuoteArgument(executable) + " -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -InputFormat Text -OutputFormat Text -Command " + QuoteArgument(script)), IntPtr.Zero, IntPtr.Zero, true, 0x00080000 | 0x00000004 | 0x00000400 | 0x08000000, environmentBlock, cwd, ref startup, out process));
             step = "contain process tree";

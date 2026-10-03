@@ -185,8 +185,9 @@ if (process.platform === 'win32') {
   await test('LPAC blocks ungranted user files, direct host access, host writes and existing .env', async ({ source, outside, prepare }) => {
     await fs.writeFile(path.join(outside, 'private.txt'), 'HOST_PRIVATE_SENTINEL');
     const workspace = await prepare();
-    const result = await execute(workspace, source, `$ErrorActionPreference='Continue'; Get-Content '${path.join(outside, 'private.txt')}'; Get-Content .env; [IO.File]::WriteAllText('${path.join(outside, 'written.txt')}','BAD')`);
-    assert.notEqual(result.code, 0, result.output);
+    const result = await execute(workspace, source, `try{Get-Content '${path.join(outside, 'private.txt')}';exit 91}catch{Write-Output DENIED_PRIVATE};try{Get-Content .env;exit 92}catch{Write-Output DENIED_ENV};try{[IO.File]::WriteAllText('${path.join(outside, 'written.txt')}','BAD');exit 93}catch{Write-Output DENIED_WRITE}`);
+    assert.equal(result.code, 0, result.output);
+    for (const marker of ['DENIED_PRIVATE', 'DENIED_ENV', 'DENIED_WRITE']) assert.ok(result.output.includes(marker), result.output);
     assert.ok(!result.output.includes('HOST_PRIVATE_SENTINEL'));
     assert.ok(!result.output.includes('PRIVATE_ENV_MUST_NOT_BE_COPIED'));
     assert.equal(await exists(path.join(outside, 'written.txt')), false);
@@ -229,7 +230,7 @@ if (process.platform === 'win32') {
   await test('COM shell activation cannot copy ungranted private files', async ({ source, outside, prepare }) => {
     await fs.writeFile(path.join(outside, 'private.txt'), 'PRIVATE_BROKER_SENTINEL');
     const workspace = await prepare();
-    const result = await execute(workspace, source, `try{$shell=New-Object -ComObject Shell.Application;$shell.NameSpace((Get-Location).Path).CopyHere('${path.join(outside, 'private.txt')}',20)}catch{};Start-Sleep -Seconds 1;if(Test-Path private.txt){exit 9}`);
+    const result = await execute(workspace, source, `try{$shell=New-Object -ComObject Shell.Application;$shell.NameSpace((Get-Location).ProviderPath).CopyHere('${path.join(outside, 'private.txt')}',20)}catch{};Start-Sleep -Seconds 1;if(Test-Path private.txt){exit 9}`);
     assert.equal(result.code, 0, result.output);
     assert.equal(await exists(workspace.mappedPath(path.join(source, 'private.txt'))), false);
   });
