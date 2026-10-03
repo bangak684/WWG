@@ -94,7 +94,7 @@ else {
         const scope = folders.flatMap(folder => folder.approvedFolders.map(relative => path.resolve(folder.path,relative))).join('\n');
         const options: Electron.MessageBoxOptions = {
           type:'warning', message:'자동승인을 시작할까요?',
-          detail:`접근 범위:\n${scope}\n\n허용한 폴더의 파일 변경·대량 이동·삭제를 추가 확인 없이 실행합니다. 승인 대기 중인 요청도 실행합니다. ${process.platform==='darwin'?'셸 명령과 네트워크 사용도 자동승인합니다.':'Windows에서는 파일 도구를 사용할 수 있으며 셸 명령은 지원하지 않습니다.'}\n.env를 포함한 비밀파일과 허용 범위 밖 접근은 계속 차단됩니다.`,
+          detail:`접근 범위:\n${scope}\n\n허용한 폴더의 파일 변경·대량 이동·삭제를 추가 확인 없이 실행합니다. 승인 대기 중인 요청도 실행합니다. 셸 명령과 네트워크 사용도 자동승인합니다.${process.platform==='win32'?' Windows 명령은 비밀파일을 제외한 작업 복사본에서 실행하고 결과를 원본에 반영합니다.':''}\n.env를 포함한 비밀파일과 허용 범위 밖 접근은 계속 차단됩니다.`,
           buttons:['취소','자동승인 시작'], defaultId:0, cancelId:0, noLink:true,
           checkboxLabel:'다음 실행에도 자동승인 유지', checkboxChecked:store.data.settings.rememberAutomatic
         };
@@ -123,7 +123,7 @@ else {
     const createWindow = (): Promise<BrowserWindow> => {
       if(loadingWindow)return loadingWindow;
       if(window&&!window.isDestroyed())return Promise.resolve(window);
-      const win = new BrowserWindow({ show:false, width:1120, height:800, minWidth:820, minHeight:600, title:'WWG', backgroundColor:'#f6f5f1', titleBarStyle:'hiddenInset', trafficLightPosition:{x:20,y:22}, webPreferences:{ preload:path.join(__dirname,'../preload/index.js'), contextIsolation:true, nodeIntegration:false, sandbox:true, webSecurity:true, devTools:!app.isPackaged||isolatedTest } });
+      const win = new BrowserWindow({ show:false, width:1120, height:800, minWidth:820, minHeight:600, title:'WWG', backgroundColor:'#f6f5f1', ...(process.platform==='darwin'?{titleBarStyle:'hiddenInset' as const,trafficLightPosition:{x:20,y:22}}:{}), webPreferences:{ preload:path.join(__dirname,'../preload/index.js'), contextIsolation:true, nodeIntegration:false, sandbox:true, webSecurity:true, devTools:!app.isPackaged||isolatedTest } });
       window=win;
       win.webContents.setWindowOpenHandler(() => ({ action:'deny' }));
       win.webContents.on('will-navigate', e => e.preventDefault());
@@ -133,6 +133,7 @@ else {
       win.webContents.on('render-process-gone', () => { void service.setPaused(true).catch(() => {}); });
       win.on('close', event => {
         if(process.platform==='darwin'&&tray&&!tray.isDestroyed()&&!shuttingDown){event.preventDefault();win.hide();app.dock?.hide();}
+        else if(process.platform==='win32'&&!shuttingDown){event.preventDefault();app.quit();}
       });
       win.on('closed', () => { if(window===win)window=null; });
       loadingWindow=win.loadURL(trustedURL).then(() => win).finally(() => {loadingWindow=undefined;});

@@ -13,6 +13,7 @@ import { commandSandbox, inspectCommandTree } from './command-sandbox';
 import { commandEnvironment, outputRedactor, selectedEnvironment, validateEnvironmentNames } from './command-environment';
 import { requireSafeRoot } from './secret-policy';
 import { emptyTaskCounts, taskState } from './tasks';
+import { WindowsCommandWorkspace } from './windows-command';
 export { commandEnvironment } from './command-environment';
 
 interface Runtime { process: ChildProcess; output: string; bytes: number; cancelled: boolean; reason: string; killTimer?: NodeJS.Timeout }
@@ -359,12 +360,22 @@ export class Workspace extends EventEmitter {
     for (const scope of others) for (const folder of scope.approvedFolders) {
       if (!(await fs.lstat(await files.resolveFile(scope,folder))).isDirectory()) throw new Error('접근 폴더가 변경되었습니다.');
     }
-    const inspected = await inspectCommandTree(project, () => this.allowed(job),others);
-    const sandbox = commandSandbox(project, true, [...inspected.targets, this.dataDir, ...this.protectedPaths], inspected.protectedParents,others);
+    const windows = process.platform === 'win32';
+    const inspected = windows ? undefined : await inspectCommandTree(project, () => this.allowed(job),others);
+    const sandbox = windows ? '' : commandSandbox(project, true, [...inspected!.targets, this.dataDir, ...this.protectedPaths], inspected!.protectedParents,others);
     if (!this.allowed(job)) throw new Error('실행 전에 변경 권한이 취소되었습니다.');
     const selected = selectedEnvironment(this.project(job.projectId).environmentNames ?? [], job.environment ?? []);
     const redact = outputRedactor(Object.values(selected));
-    const child = spawn('/usr/bin/sandbox-exec', ['-p', sandbox, '/bin/sh', '-c', job.command!], { cwd, env: commandEnvironment(selected), detached: true, shell: false, stdio: ['ignore','pipe','pipe'] });
+    let staged: WindowsCommandWorkspace | undefined;
+    let child: ChildProcess;
+    try {
+      if (windows) {
+        const scopes = [project, ...others];
+        staged = await WindowsCommandWorkspace.prepare(scopes.flatMap(scope => scope.approvedFolders.map(folder => path.resolve(scope.path, folder))), this.dataDir, () => this.allowed(job), [this.dataDir, ...this.protectedPaths]);
+        await staged.prepareRuntimes(job.command!);
+        child = staged.spawn(cwd, job.command!, selected);
+      } else child = spawn('/usr/bin/sandbox-exec', ['-p', sandbox, '/bin/sh', '-c', job.command!], { cwd, env: commandEnvironment(selected), detached: true, shell: false, stdio: ['ignore','pipe','pipe'] });
+    } catch (error) { await staged?.dispose(); throw error; }
     const runtime: Runtime = { process: child, output: '', bytes: 0, cancelled: false, reason: '' };
     this.processes.set(job.id, runtime);
     const collect = (text: string): void => { runtime.output = (runtime.output + text).slice(-MAX_OUTPUT); this.outputChanged(); };
@@ -378,13 +389,19 @@ export class Workspace extends EventEmitter {
       const code = await new Promise<number | null>((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
       for (const decoder of decoders) collect(redact(decoder.end()));
       collect(redact('', true));
+      if (staged && !runtime.cancelled && code !== null && code !== 125) {
+        if (!this.allowed(job)) throw new Error('결과 반영 전에 접근 권한이 취소되었습니다.');
+        try { await staged.synchronize(); }
+        catch (error) { return { state: 'failed', output: (runtime.output + '\n[Windows 결과 반영 실패: ' + (error as Error).message + ']').slice(-MAX_OUTPUT), code }; }
+      }
       return { state: runtime.cancelled ? 'cancelled' : code === 0 ? 'done' : 'failed', output: (runtime.output + (runtime.reason ? '\n[' + runtime.reason + ']' : '')).slice(-MAX_OUTPUT) || '(출력 없음)', code };
     } finally {
       if (timer) clearTimeout(timer);
       // Parent exit is not proof that descendants exited. Do not leave a live process group behind.
-      if (child.pid) { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }
+      if (!windows && child.pid) { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }
       if (runtime.killTimer) clearTimeout(runtime.killTimer);
       this.processes.delete(job.id);
+      await staged?.dispose();
     }
   }
   private kill(id: string, reason = '사용자가 실행을 중지했습니다.'): void {

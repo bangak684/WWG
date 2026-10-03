@@ -2,12 +2,14 @@ import path from 'node:path';
 import { diskFs as fs } from './disk-fs';
 import type { Project } from '../shared';
 import { protectedPath, protectedPathPatterns, requireSafeRoot } from './secret-policy';
+import { requireWindowsRunner } from './windows-command';
 
 const literal = (value: string): string => '(literal ' + JSON.stringify(value) + ')';
 const subtree = (value: string): string => '(subpath ' + JSON.stringify(value) + ')';
 
 /** Every command, including reviewed commands, has the same non-overridable file boundary. */
 export function commandSandbox(project: Project, networkAllowed = false, protectedTargets: string[] = [], protectedParents: string[] = [], otherScopes: Project[] = []): string {
+  if (process.platform === 'win32') { requireWindowsRunner(); return ''; }
   if (process.platform !== 'darwin') throw new Error('이 OS에서는 비밀파일 차단을 위한 명령의 폴더 격리를 지원하지 않아 셸 명령을 실행할 수 없습니다.');
   const scopes = [project,...otherScopes];
   const folders = new Set<string>(), ancestors = new Set<string>(['/']);

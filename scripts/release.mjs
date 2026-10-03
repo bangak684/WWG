@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { prepareRelease, writeReleaseManifest } from './release-files.mjs';
+import { buildWindowsRunner } from './build-windows-runner.mjs';
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const args=process.argv.slice(2);
@@ -36,6 +37,7 @@ async function run(executable,arguments_,extra={}) {
 const node=(script,arguments_=[],extra={})=>run(process.execPath,[path.join(root,script),...arguments_],extra);
 await node('scripts/check-release.mjs');
 await node('node_modules/electron-vite/bin/electron-vite.js',['build']);
+if(windows)await buildWindowsRunner();
 const arch=windows?'x64':'arm64',prefix=`WWG-${version}-${arch}`;
 for(const name of await fs.readdir(output))if(name.startsWith(prefix)&&/^(?:-portable)?(?:-preview)?\.(?:dmg|exe|zip)(?:\.blockmap)?$/.test(name.slice(prefix.length)))await fs.rm(path.join(output,name));
 await node('node_modules/electron-builder/out/cli/cli.js',['--config','electron-builder.config.cjs',windows?'--win':'--mac',windows?'--x64':'--arm64','--publish','never'],{

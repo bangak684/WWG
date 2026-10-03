@@ -9,7 +9,7 @@ module.exports = {
   asar: true,
   npmRebuild: false,
   compression: 'normal',
-  files: ['out/**/*', 'package.json', 'LICENSE'],
+  files: ['out/**/*', '!out/windows/**', 'package.json', 'LICENSE'],
   forceCodeSigning: signed,
   electronFuses: {
     runAsNode: true,
@@ -32,6 +32,7 @@ module.exports = {
     darkModeSupport: false
   },
   win: {
+    extraResources: [{ from: 'out/windows/wwg-command.exe', to: 'wwg-command.exe' }],
     target: [{ target: 'portable', arch: ['x64'] }, { target: 'zip', arch: ['x64'] }],
     artifactName: 'WWG-${version}-${arch}-portable-preview.${ext}',
     icon: 'build/icon.ico',
