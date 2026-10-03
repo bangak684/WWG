@@ -26,7 +26,7 @@ function launcherEnvironment(): NodeJS.ProcessEnv {
   // Userenv needs these locations to create/delete an AppContainer profile.
   // They belong to the trusted launcher only, never to the requested command.
   const environment: NodeJS.ProcessEnv = { SystemRoot: process.env.SystemRoot || 'C:\\Windows' };
-  for (const name of ['WINDIR', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'TEMP', 'TMP']) {
+  for (const name of ['WINDIR', 'SystemDrive', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'TEMP', 'TMP', 'ALLUSERSPROFILE', 'ProgramData', 'PUBLIC', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'CommonProgramFiles', 'CommonProgramFiles(x86)', 'CommonProgramW6432', 'USERNAME', 'USERDOMAIN']) {
     if (process.env[name]) environment[name] = process.env[name];
   }
   return environment;
@@ -173,7 +173,8 @@ export class WindowsCommandWorkspace {
   }
   environment(selected: Record<string, string>): NodeJS.ProcessEnv {
     const system = process.env.SystemRoot || 'C:\\Windows';
-    return { ...selected, SystemRoot: system, WINDIR: system, ComSpec: path.join(system, 'System32', 'cmd.exe'),
+    return { ...selected, SystemRoot: system, WINDIR: system, SystemDrive: path.parse(system).root.replace(/[\\/]$/, ''), ComSpec: path.join(system, 'System32', 'cmd.exe'),
+      USERPROFILE: path.join(this.stage, 'temp'), HOME: path.join(this.stage, 'temp'), APPDATA: path.join(this.stage, 'temp'), LOCALAPPDATA: path.join(this.stage, 'temp'),
       PATH: [...this.runtimePaths, path.join(system, 'System32'), path.join(system, 'System32', 'WindowsPowerShell', 'v1.0')].join(';'),
       TEMP: path.join(this.stage, 'temp'), TMP: path.join(this.stage, 'temp'), NO_COLOR: '1', TERM: 'dumb',
       GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: 'NUL', PYTHONNOUSERSITE: '1', npm_config_userconfig: 'NUL', npm_config_cache: path.join(this.stage, 'temp', 'npm-cache') };

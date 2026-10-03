@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 export const environmentName = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/);
 export const environmentNames = z.array(environmentName).max(32).refine(names => new Set(names).size === names.length, '중복된 환경변수 이름입니다.');
-const reserved = /^(?:PATH|HOME|USERPROFILE|TMPDIR|TMP|TEMP|APPDATA|LOCALAPPDATA|SystemRoot|WINDIR|COMSPEC|ProgramFiles(?:\(x86\))?|ProgramW6432|ENV|BASH_ENV|SHELLOPTS|BASHOPTS|CDPATH|IFS|NODE_OPTIONS|NODE_PATH|ELECTRON_.*|DYLD_.*|LD_.*|WORKROOM_.*|GIT_CONFIG.*|PYTHON.*|npm_config_.*)$/i;
+const reserved = /^(?:PATH|HOME|USERPROFILE|TMPDIR|TMP|TEMP|APPDATA|LOCALAPPDATA|SystemRoot|SystemDrive|WINDIR|COMSPEC|ProgramFiles(?:\(x86\))?|ProgramW6432|ENV|BASH_ENV|SHELLOPTS|BASHOPTS|CDPATH|IFS|NODE_OPTIONS|NODE_PATH|ELECTRON_.*|DYLD_.*|LD_.*|WORKROOM_.*|GIT_CONFIG.*|PYTHON.*|npm_config_.*)$/i;
 export function validateEnvironmentNames(raw: unknown): string[] {
   const parsed = environmentNames.safeParse(raw);
   if (!parsed.success || parsed.data.some(name => reserved.test(name)) || new Set(parsed.data.map(name => process.platform === 'win32' ? name.toUpperCase() : name)).size !== parsed.data.length) throw new Error('환경변수 이름을 확인하세요. 실행 경로·프로필·로더·앱 내부 변수는 허용할 수 없습니다.');
