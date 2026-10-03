@@ -32,6 +32,7 @@ jobs:
         run: |
           npm run typecheck
           node scripts/test-windows-command.mjs
+          node scripts/test-command-service.mjs
       - name: Package Windows x64 portable
         run: npm run package:win
       - name: Upload versioned release files

@@ -33,6 +33,7 @@ internal static class WindowsCommand {
         public UIntPtr ProcessMemory, JobMemory, PeakProcessMemory, PeakJobMemory;
     }
     [StructLayout(LayoutKind.Sequential)] struct Accounting { public long User, Kernel, PeriodUser, PeriodKernel; public uint PageFaults, Total, Active, Terminated; }
+    [StructLayout(LayoutKind.Sequential)] struct GenericMapping { public uint Read, Write, Execute, All; }
     [DllImport("userenv.dll", CharSet = CharSet.Unicode)] static extern int CreateAppContainerProfile(string name, string display, string description, IntPtr capabilities, uint count, out IntPtr sid);
     [DllImport("userenv.dll", CharSet = CharSet.Unicode)] static extern int DeleteAppContainerProfile(string name);
     [DllImport("advapi32.dll")] static extern IntPtr FreeSid(IntPtr sid);
@@ -57,6 +58,8 @@ internal static class WindowsCommand {
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetHandleInformation(IntPtr handle, uint mask, uint flags);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr CreateFile(string name, uint access, uint sharing, ref SecurityAttributes security, uint disposition, uint flags, IntPtr template);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool DuplicateToken(IntPtr token, int level, out IntPtr duplicate);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool AccessCheck(IntPtr descriptor, IntPtr token, uint desired, ref GenericMapping mapping, IntPtr privileges, ref uint privilegeSize, out uint granted, out bool status);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr token, int type, out int value, int size, out int returned);
     [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool ConvertStringSecurityDescriptorToSecurityDescriptor(string text, uint revision, out IntPtr descriptor, out uint length);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetSecurityDescriptorSacl(IntPtr descriptor, out bool present, out IntPtr sacl, out bool defaulted);
@@ -95,6 +98,27 @@ internal static class WindowsCommand {
             uint error = SetNamedSecurityInfo(stage, 1, 0x10, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, sacl);
             if (error != 0) throw new Win32Exception((int)error);
         } finally { if (descriptor != IntPtr.Zero) LocalFree(descriptor); }
+    }
+    static bool ProbeRead(IntPtr token, string packageSid) {
+        IntPtr descriptor = IntPtr.Zero, privileges = Marshal.AllocHGlobal(1024);
+        try {
+            uint length;
+            Check(ConvertStringSecurityDescriptorToSecurityDescriptor("O:WDG:WDD:(A;;0x1;;;WD)(A;;0x1;;;" + packageSid + ")", 1, out descriptor, out length));
+            var mapping = new GenericMapping { Read = 1, Write = 2, Execute = 4, All = 7 };
+            uint privilegeSize = 1024, granted; bool status;
+            Check(AccessCheck(descriptor, token, 1, ref mapping, privileges, ref privilegeSize, out granted, out status));
+            return status && (granted & 1) != 0;
+        } finally { if (descriptor != IntPtr.Zero) LocalFree(descriptor); Marshal.FreeHGlobal(privileges); }
+    }
+    static void VerifyLpac(IntPtr token, IntPtr appSid) {
+        int isContainer, returned; Check(GetTokenInformation(token, 29, out isContainer, 4, out returned));
+        IntPtr duplicate = IntPtr.Zero;
+        try {
+            Check(DuplicateToken(token, 2, out duplicate));
+            // Class 46 is not implemented by GetTokenInformation on supported Windows builds.
+            // Verify LPAC's actual access semantics: explicit app SID works, ALL_APPLICATION_PACKAGES does not.
+            if (isContainer != 1 || !ProbeRead(duplicate, new SecurityIdentifier(appSid).Value) || ProbeRead(duplicate, "AC")) throw new IOException("Windows did not create the required LPAC sandbox.");
+        } finally { if (duplicate != IntPtr.Zero) CloseHandle(duplicate); }
     }
     static int Run(Request request) {
         if (request == null || request.profile == null || !System.Text.RegularExpressions.Regex.IsMatch(request.profile, "^WWG\\.Command\\.[a-f0-9-]{36}$") || request.command == null || request.command.Length > 8000 || request.command.IndexOf('\0') >= 0) throw new ArgumentException("Invalid command request.");
@@ -152,11 +176,8 @@ internal static class WindowsCommand {
             Check(SetInformationJobObject(job, 9, ref limits, Marshal.SizeOf(typeof(ExtendedLimits))));
             Check(AssignProcessToJobObject(job, process.Process));
             step = "verify LPAC token";
-            Check(OpenProcessToken(process.Process, 8, out token));
-            int isContainer, isLpac, returned;
-            Check(GetTokenInformation(token, 29, out isContainer, 4, out returned));
-            Check(GetTokenInformation(token, 46, out isLpac, 4, out returned));
-            if (isContainer != 1 || isLpac != 1) throw new IOException("Windows did not create the required LPAC sandbox.");
+            Check(OpenProcessToken(process.Process, 10, out token));
+            VerifyLpac(token, sid);
             step = "execute command";
             if (ResumeThread(process.Thread) == uint.MaxValue) throw new Win32Exception(Marshal.GetLastWin32Error());
             resumed = true;
