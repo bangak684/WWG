@@ -24,7 +24,7 @@ const windows = process.platform === 'win32';
 const propose = command => workspace.propose({ requestId: randomUUID(), projectId, kind: 'command', path: '', command });
 async function settled(job) { await workspace.waitForIdle(); return workspace.job(job.id); }
 try {
-  let job = await propose(windows ? 'echo manual-ok> manual.txt' : "printf 'manual-ok' > manual.txt");
+  let job = await propose(windows ? "[IO.File]::WriteAllText('manual.txt','manual-ok')" : "printf 'manual-ok' > manual.txt");
   assert.equal(job.state, 'pending');
   await assert.rejects(fs.stat(path.join(source, 'manual.txt')), { code: 'ENOENT' });
   await workspace.decide(job.id, true); job = await settled(job);
@@ -33,7 +33,7 @@ try {
   console.log('PASS manual approval executes only after acceptance');
 
   await workspace.enableAutomatic(false, structuredClone(store.data.folders));
-  job = await settled(await propose(windows ? 'mkdir bulk & move manual.txt bulk\\moved.txt & del bulk\\moved.txt & rmdir bulk' : 'mkdir bulk && mv manual.txt bulk/moved.txt && rm bulk/moved.txt && rmdir bulk'));
+  job = await settled(await propose(windows ? 'New-Item -ItemType Directory bulk | Out-Null; Move-Item manual.txt bulk\\moved.txt; Remove-Item bulk -Recurse -Force' : 'mkdir bulk && mv manual.txt bulk/moved.txt && rm bulk/moved.txt && rmdir bulk'));
   assert.equal(job.state, 'done', job.output);
   await assert.rejects(fs.stat(path.join(source, 'manual.txt')), { code: 'ENOENT' });
   console.log('PASS automatic bulk operations');
@@ -41,18 +41,18 @@ try {
   process.env.WWG_TEST_ALLOWED = 'secret-selected-value'; process.env.WWG_TEST_UNREQUESTED = 'must-not-inherit';
   await workspace.setEnvironmentNames(['WWG_TEST_ALLOWED']);
   if (windows) assert.equal(selectedEnvironment(['wwg_test_allowed'], ['WWG_TEST_ALLOWED']).WWG_TEST_ALLOWED, 'secret-selected-value');
-  job = await workspace.propose({ requestId: randomUUID(), projectId, kind: 'command', path: '', command: windows ? 'echo %WWG_TEST_ALLOWED% & if defined WWG_TEST_UNREQUESTED exit /b 9' : 'printf "%s" "$WWG_TEST_ALLOWED"; test -z "$WWG_TEST_UNREQUESTED"', environment: ['WWG_TEST_ALLOWED'] });
+  job = await workspace.propose({ requestId: randomUUID(), projectId, kind: 'command', path: '', command: windows ? 'Write-Output $env:WWG_TEST_ALLOWED; if($env:WWG_TEST_UNREQUESTED){exit 9}' : 'printf "%s" "$WWG_TEST_ALLOWED"; test -z "$WWG_TEST_UNREQUESTED"', environment: ['WWG_TEST_ALLOWED'] });
   job = await settled(job); assert.equal(job.state, 'done', job.output);
   assert.ok(!job.output.includes('secret-selected-value')); assert.ok(job.output.includes('[환경변수 값 숨김]'));
   delete process.env.WWG_TEST_ALLOWED; delete process.env.WWG_TEST_UNREQUESTED;
   console.log('PASS selected OS environment only and streaming output redaction');
 
-  job = await settled(await propose(windows ? 'type .env' : 'cat .env'));
+  job = await settled(await propose(windows ? 'Get-Content .env' : 'cat .env'));
   assert.equal(job.state, 'failed', job.output);
   assert.ok(!job.output.includes('NEVER_RETURN_THIS_PRIVATE_VALUE'));
   console.log('PASS original .env cannot be read by shell');
 
-  job = await propose(windows ? 'echo RUNNING & powershell -NoLogo -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 30"' : 'printf RUNNING; sleep 30');
+  job = await propose(windows ? 'Write-Output RUNNING; Start-Sleep -Seconds 30' : 'printf RUNNING; sleep 30');
   const started = Date.now();
   while (!workspace.jobSnapshot(job.id).output.includes('RUNNING')) {
     if (!['queued', 'running'].includes(workspace.job(job.id).state)) throw new Error(workspace.job(job.id).output);

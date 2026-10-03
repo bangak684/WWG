@@ -156,7 +156,7 @@ async function execute(workspace, cwd, command, selected = {}) {
 if (process.platform === 'win32') {
   await test('LPAC cmd runs and safe writes synchronize', async ({ source, prepare }) => {
     const workspace = await prepare();
-    const result = await execute(workspace, source, 'echo LPAC-cmd-ok> command.txt');
+    const result = await execute(workspace, source, 'cmd /d /c "echo LPAC-cmd-ok> command.txt"');
     assert.equal(result.code, 0, result.output);
     await workspace.synchronize();
     assert.match(await fs.readFile(path.join(source, 'command.txt'), 'utf8'), /LPAC-cmd-ok/);
@@ -164,47 +164,35 @@ if (process.platform === 'win32') {
   await test('LPAC blocks ungranted user files, direct host access, host writes and existing .env', async ({ source, outside, prepare }) => {
     await fs.writeFile(path.join(outside, 'private.txt'), 'HOST_PRIVATE_SENTINEL');
     const workspace = await prepare();
-    const result = await execute(workspace, source, `type "${path.join(outside, 'private.txt')}" & type .env & echo BAD> "${path.join(outside, 'written.txt')}"`);
+    const result = await execute(workspace, source, `$ErrorActionPreference='Continue'; Get-Content '${path.join(outside, 'private.txt')}'; Get-Content .env; [IO.File]::WriteAllText('${path.join(outside, 'written.txt')}','BAD')`);
     assert.notEqual(result.code, 0, result.output);
     assert.ok(!result.output.includes('HOST_PRIVATE_SENTINEL'));
     assert.ok(!result.output.includes('PRIVATE_ENV_MUST_NOT_BE_COPIED'));
     assert.equal(await exists(path.join(outside, 'written.txt')), false);
     // Even granted originals have no LPAC ACL; avoid literal path mapping by using an env value.
-    const direct = await execute(workspace, source, 'type "%ORIGINAL_HOST_FILE%"', { ORIGINAL_HOST_FILE: path.join(source, 'safe.txt') });
+    const direct = await execute(workspace, source, 'Get-Content -LiteralPath $env:ORIGINAL_HOST_FILE', { ORIGINAL_HOST_FILE: path.join(source, 'safe.txt') });
     assert.notEqual(direct.code, 0, direct.output);
     assert.ok(!direct.output.includes('original'));
   });
   await test('LPAC does not inherit environment variables and receives only selected values', async ({ source, prepare }) => {
     process.env.WWG_UNREQUESTED_SECRET = 'DO_NOT_INHERIT';
     const workspace = await prepare();
-    const result = await execute(workspace, source, 'if defined WWG_UNREQUESTED_SECRET (exit /b 9) else (echo %SELECTED_VALUE%> selected.txt)', { SELECTED_VALUE: 'explicit' });
+    const result = await execute(workspace, source, "if($env:WWG_UNREQUESTED_SECRET){exit 9};[IO.File]::WriteAllText('selected.txt',$env:SELECTED_VALUE)", { SELECTED_VALUE: 'explicit' });
     delete process.env.WWG_UNREQUESTED_SECRET;
     assert.equal(result.code, 0, result.output);
     await workspace.synchronize();
     assert.match(await fs.readFile(path.join(source, 'selected.txt'), 'utf8'), /explicit/);
   });
-  await test('LPAC cmd can move and delete copied files and folders', async ({ source, prepare }) => {
+  await test('LPAC PowerShell can move and delete copied files and folders', async ({ source, prepare }) => {
     const workspace = await prepare();
-    const result = await execute(workspace, source, 'mkdir bulk & move safe.txt bulk\\moved.txt & del bulk\\moved.txt & rmdir bulk');
-    if (result.code !== 0) {
-      const file = workspace.mappedPath(path.join(source, 'bulk', 'moved.txt'));
-      for (const executable of ['icacls.exe', 'attrib.exe']) {
-        const diagnostic = await promisify(execFile)(path.join(process.env.SystemRoot, 'System32', executable), [file]);
-        console.log(`${executable}: ${diagnostic.stdout}`);
-      }
-      console.log(`mode: ${(await fs.stat(file)).mode.toString(8)}`);
-      for (const command of ['del /f /q bulk\\moved.txt', 'powershell -NoLogo -NoProfile -NonInteractive -Command "[IO.File]::Delete(\'bulk\\moved.txt\')"']) {
-        const retry = await execute(workspace, source, command);
-        console.log(`delete diagnostic: ${retry.code}: ${retry.output}`);
-      }
-    }
+    const result = await execute(workspace, source, 'New-Item -ItemType Directory bulk | Out-Null; Move-Item safe.txt bulk\\moved.txt; Remove-Item bulk -Recurse -Force');
     assert.equal(result.code, 0, result.output);
     await workspace.synchronize();
     assert.equal(await exists(path.join(source, 'safe.txt')), false);
   });
   await test('LPAC PowerShell runs without profiles', async ({ source, prepare }) => {
     const workspace = await prepare();
-    const result = await execute(workspace, source, `powershell -NoLogo -NoProfile -NonInteractive -Command "[IO.File]::WriteAllText('powershell.txt','powershell-ok')"`);
+    const result = await execute(workspace, source, "[IO.File]::WriteAllText('powershell.txt','powershell-ok')");
     assert.equal(result.code, 0, result.output);
     await workspace.synchronize();
     assert.equal(await fs.readFile(path.join(source, 'powershell.txt'), 'utf8'), 'powershell-ok');
@@ -218,7 +206,7 @@ if (process.platform === 'win32') {
   });
   await test('closing the job stops background descendants before publication', async ({ source, prepare }) => {
     const workspace = await prepare();
-    const result = await execute(workspace, source, `start "" /b powershell -NoLogo -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 2; [IO.File]::WriteAllText('orphan.txt','BAD')"`);
+    const result = await execute(workspace, source, `cmd /d /c 'start "" /b powershell -NoLogo -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 2; [IO.File]::WriteAllText(''orphan.txt'',''BAD'')"'`);
     assert.equal(result.code, 0, result.output);
     await new Promise(resolve => setTimeout(resolve, 3000));
     assert.equal(await exists(workspace.mappedPath(path.join(source, 'orphan.txt'))), false);

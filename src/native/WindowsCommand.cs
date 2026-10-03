@@ -191,9 +191,11 @@ internal static class WindowsCommand {
             }
             var block = new StringBuilder(); foreach (var pair in environment) block.Append(pair.Key).Append('=').Append(pair.Value).Append('\0'); block.Append('\0');
             IntPtr environmentBlock = Marshal.StringToHGlobalUni(block.ToString()); allocated.Add(environmentBlock);
-            string executable = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe");
-            step = "create suspended cmd";
-            Check(CreateProcess(executable, new StringBuilder("\"" + executable + "\" /D /S /C \"" + request.command + "\""), IntPtr.Zero, IntPtr.Zero, true, 0x00080000 | 0x00000004 | 0x00000400 | 0x08000000, environmentBlock, cwd, ref startup, out process));
+            string executable = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
+            string script = "$ErrorActionPreference='Stop';[Console]::OutputEncoding=New-Object Text.UTF8Encoding $false;$OutputEncoding=[Console]::OutputEncoding;& {\n" + request.command + "\n};if(!$?){exit 1};if($null -ne $LASTEXITCODE){exit $LASTEXITCODE}";
+            string encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
+            step = "create suspended PowerShell";
+            Check(CreateProcess(executable, new StringBuilder("\"" + executable + "\" -NoLogo -NoProfile -NonInteractive -EncodedCommand " + encoded), IntPtr.Zero, IntPtr.Zero, true, 0x00080000 | 0x00000004 | 0x00000400 | 0x08000000, environmentBlock, cwd, ref startup, out process));
             step = "contain process tree";
             job = CreateJobObject(IntPtr.Zero, null); if (job == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
             var limits = new ExtendedLimits { Basic = new BasicLimits { Flags = 0x2000 } };
