@@ -332,8 +332,12 @@ internal static class WindowsCommand {
         try {
             AppContext.SetSwitch("Switch.System.IO.UseLegacyPathHandling", false);
             AppContext.SetSwitch("Switch.System.IO.BlockLongPaths", false);
-            Console.InputEncoding = new UTF8Encoding(false);
-            Console.OutputEncoding = new UTF8Encoding(false);
+            // Detached launchers have redirected handles but no console code page.
+            // Configure the streams without calling SetConsoleCP/SetConsoleOutputCP.
+            var utf8 = new UTF8Encoding(false);
+            Console.SetIn(new StreamReader(Console.OpenStandardInput(), utf8));
+            Console.SetOut(new StreamWriter(Console.OpenStandardOutput(), utf8) { AutoFlush = true });
+            Console.SetError(new StreamWriter(Console.OpenStandardError(), utf8) { AutoFlush = true });
             if (args.Length == 3 && args[0] == "--cleanup" && System.Text.RegularExpressions.Regex.IsMatch(args[1], "^WWG\\.Command\\.[a-f0-9-]{36}$")) { UnmountWorkspace(args[2]); DeleteAppContainerProfile(args[1]); return 0; }
             if (args.Length != 0) throw new ArgumentException("Unknown launcher option.");
             var json = new JavaScriptSerializer { MaxJsonLength = 32 * 1024 * 1024 };
