@@ -1,34 +1,37 @@
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
 import { z } from 'zod';
-import type { ApprovalMode, FolderScope, Job, Receipt } from '../shared';
+import type { ApprovalMode, FolderScope, Job, Receipt, Task } from '../shared';
 import { atomicPrivateWrite, readPrivateText } from './private-io';
 import { fingerprint, terminal } from './request';
 import { environmentNames } from './command-environment';
+import { emptyTaskCounts, syncTaskCounts } from './tasks';
 
-export interface Data { version: 2; folders: FolderScope[]; settings: { approvalMode: ApprovalMode; environmentNames: string[]; rememberAutomatic: boolean }; jobs: Job[]; receipts: Receipt[] }
+export interface Data { version: 2; folders: FolderScope[]; settings: { approvalMode: ApprovalMode; environmentNames: string[]; rememberAutomatic: boolean }; jobs: Job[]; receipts: Receipt[]; tasks: Task[] }
 type Mutation = (draft: Data) => void;
 const id = z.string().uuid();
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const state = z.enum(['pending', 'queued', 'running', 'done', 'failed', 'declined', 'cancelled']);
 const folders = z.array(z.object({ id, path: z.string().max(8192), approvedFolders: z.array(z.string().max(1024)).max(500).default([]) })).max(100);
 const jobs = z.array(z.object({
-    id, requestId: id, projectId: id, kind: z.enum(['write','delete','command','access','read','request']), state,
+    id, requestId: id, projectId: id, taskId: id.optional(), kind: z.enum(['write','delete','command','access','read','request']), state,
     label: z.string().max(8000), path: z.string().max(1024).optional(), content: z.string().max(262144).optional(), expectedHash: digest.nullable().optional(), command: z.string().max(8000).optional(), environment: environmentNames.optional(),
     before: z.string().max(262144).optional(), requestHash: digest.optional(), resultHash: digest.optional(), approval: z.enum(['manual','automatic']).optional(),
     tool: z.string().max(128).optional(), directory: z.string().max(8192).optional(),
     output: z.string().max(64000), exitCode: z.number().nullable().optional(), createdAt: z.number(), updatedAt: z.number()
-  }).refine(job => !['read','request'].includes(job.kind) || terminal(job.state), '조회 로그는 실행 대기 상태일 수 없습니다.')).max(200);
-const receipts = z.array(z.object({ id, requestId: id, projectId: id, requestHash: digest.optional(), kind: z.enum(['write','delete','command','access']), state, createdAt: z.number(), updatedAt: z.number() })).max(10000).default([]);
+  }).refine(job => !['read','request'].includes(job.kind) || terminal(job.state) || (job.taskId && job.kind === 'read' && job.state === 'running'), '조회 로그는 실행 대기 상태일 수 없습니다.')).max(200);
+const receipts = z.array(z.object({ id, requestId: id, projectId: id, taskId: id.optional(), requestHash: digest.optional(), kind: z.enum(['write','delete','command','access']), state, createdAt: z.number(), updatedAt: z.number() })).max(10000).default([]);
+const count = z.number().int().min(0);
+const tasks = z.array(z.object({ id, title: z.string().trim().min(1).max(200), counts: z.object({ pending:count, queued:count, running:count, done:count, failed:count, declined:count, cancelled:count }).default(emptyTaskCounts), createdAt:z.number(), updatedAt:z.number(), cancelledAt:z.number().optional() })).max(100).default([]);
 const defaultSettings = (): Data['settings'] => ({ approvalMode: 'review', environmentNames: [], rememberAutomatic: false });
 const schema = z.object({
   version: z.literal(2), folders,
   settings: z.object({ approvalMode: z.enum(['review','automatic']).default('review'), environmentNames: environmentNames.default([]), rememberAutomatic: z.boolean().default(false) }).default(defaultSettings),
-  jobs, receipts
+  jobs, receipts, tasks
 });
 
 export class Store extends EventEmitter {
-  data: Data = { version: 2, folders: [], settings: defaultSettings(), jobs: [], receipts: [] };
+  data: Data = { version: 2, folders: [], settings: defaultSettings(), jobs: [], receipts: [], tasks: [] };
   private queue: Promise<unknown> = Promise.resolve();
   private lazyMutations: Mutation[] = [];
   private lazyTimer: NodeJS.Timeout | undefined;
@@ -40,6 +43,8 @@ export class Store extends EventEmitter {
       if (raw?.version === 1) {
         // Preserve granted boundaries and execution logs. Retired task/activity data is omitted.
         const previous = z.object({ version: z.literal(1), projects: folders, jobs, receipts }).parse(raw);
+        for (const job of previous.jobs) delete job.taskId;
+        for (const receipt of previous.receipts) delete receipt.taskId;
         for (const job of previous.jobs) {
           const folder = previous.projects.find(folder => folder.id === job.projectId);
           if (folder) { job.directory = folder.path; if (job.kind !== 'command' && job.path) job.label = path.resolve(folder.path,job.path).slice(0,8000); }
@@ -54,6 +59,7 @@ export class Store extends EventEmitter {
     if (!(this.data.settings.approvalMode === 'automatic' && this.data.settings.rememberAutomatic && this.data.folders.length)) {
       this.data.settings.approvalMode = 'review'; this.data.settings.rememberAutomatic = false;
     }
+    const beforeRestart = structuredClone(this.data.jobs);
     for (const job of this.data.jobs) {
       if (!job.requestHash && (job.kind === 'command' || job.content !== undefined)) job.requestHash = fingerprint(job);
       if (!terminal(job.state)) {
@@ -65,8 +71,9 @@ export class Store extends EventEmitter {
       if (job.kind === 'read' || job.kind === 'request') continue;
       const receipt = this.data.receipts.find(r => r.requestId === job.requestId);
       if (receipt) { receipt.state = job.state; receipt.updatedAt = job.updatedAt; }
-      else this.data.receipts.push({ id: job.id, requestId: job.requestId, projectId: job.projectId, requestHash: job.requestHash, kind: job.kind, state: job.state, createdAt: job.createdAt, updatedAt: job.updatedAt });
+      else this.data.receipts.push({ id: job.id, requestId: job.requestId, projectId: job.projectId, taskId: job.taskId, requestHash: job.requestHash, kind: job.kind, state: job.state, createdAt: job.createdAt, updatedAt: job.updatedAt });
     }
+    syncTaskCounts(beforeRestart, this.data.jobs, this.data.tasks);
     for (const receipt of this.data.receipts) if (!terminal(receipt.state)) receipt.state = 'cancelled';
     await this.update(() => {});
   }
@@ -78,8 +85,13 @@ export class Store extends EventEmitter {
       let writing = false;
       try {
         const draft = structuredClone(this.data);
-        for (const fn of lazy) fn(draft);
+        for (const fn of lazy) {
+          const before = draft.jobs.map(job => ({ ...job }));
+          fn(draft); syncTaskCounts(before, draft.jobs, draft.tasks);
+        }
+        const before = draft.jobs.map(job => ({ ...job }));
         mutate(draft);
+        syncTaskCounts(before, draft.jobs, draft.tasks);
         const valid = schema.parse(draft);
         const text = JSON.stringify(valid);
         if (Buffer.byteLength(text) > 32 * 1024 * 1024) throw new Error('실행 로그가 32MB를 초과했습니다. 완료 로그를 비우세요.');

@@ -7,11 +7,12 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import { Store } from './store';
 import * as files from './files';
-import { APP_VERSION, type ApprovalMode, type Job, type Project, type Snapshot, type FolderScope, type Receipt } from '../shared';
+import { APP_VERSION, type ApprovalMode, type Job, type Project, type Snapshot, type FolderScope, type Receipt, type Task, type TaskSnapshot } from '../shared';
 import { applyEdits, fingerprint, terminal, type Proposal } from './request';
 import { commandSandbox, inspectCommandTree } from './command-sandbox';
 import { commandEnvironment, outputRedactor, selectedEnvironment, validateEnvironmentNames } from './command-environment';
 import { requireSafeRoot } from './secret-policy';
+import { emptyTaskCounts, taskState } from './tasks';
 export { commandEnvironment } from './command-environment';
 
 interface Runtime { process: ChildProcess; output: string; bytes: number; cancelled: boolean; reason: string; killTimer?: NodeJS.Timeout }
@@ -60,7 +61,69 @@ export class Workspace extends EventEmitter {
   }
   snapshot(): Snapshot {
     const settings = this.store.data.settings;
-    return { folders: structuredClone(this.store.data.folders), ...settings, jobs: this.store.data.jobs.map(j => this.jobSnapshot(j.id)), connected: !!this.endpoint, paused: this.paused, lastCall: this.lastCall, endpoint: null, error: this.error, version: APP_VERSION };
+    return { folders: structuredClone(this.store.data.folders), ...settings, jobs: this.store.data.jobs.map(j => this.jobSnapshot(j.id)), tasks: this.taskSnapshots(), connected: !!this.endpoint, paused: this.paused, lastCall: this.lastCall, endpoint: null, error: this.error, version: APP_VERSION };
+  }
+  private task(id: string): Task {
+    const task = this.store.data.tasks.find(task => task.id === id);
+    if (!task) throw new Error('작업을 찾을 수 없습니다. tasks_list로 확인하거나 새 작업을 만드세요.');
+    return task;
+  }
+  private requireTaskAvailable(id?: string): void {
+    if (id && this.task(id).cancelledAt !== undefined) throw new Error('중지한 작업에는 요청을 추가할 수 없습니다. 새 작업을 만드세요.');
+  }
+  taskSnapshot(id: string): TaskSnapshot {
+    const task = structuredClone(this.task(id));
+    return { ...task, state:taskState(task), totalRequests:Object.values(task.counts).reduce((sum,count)=>sum+count,0), retainedRequests:this.store.data.jobs.filter(job=>job.taskId===id).length };
+  }
+  taskSnapshots(): TaskSnapshot[] { return this.store.data.tasks.map(task=>this.taskSnapshot(task.id)).sort((a,b)=>b.updatedAt-a.updatedAt); }
+  async createTask(requestId: string, title: string): Promise<TaskSnapshot> {
+    if (this.paused || this.closing) throw new Error('WWG 연결이 일시 정지되어 있습니다.');
+    const trimmed = title.trim();
+    if (!trimmed || trimmed.length > 200 || /[\x00-\x1f\x7f]/.test(trimmed)) throw new Error('작업 이름은 1~200자의 한 줄로 지정하세요.');
+    await this.store.update(d => {
+      if (this.paused || this.closing) throw new Error('WWG 연결이 일시 정지되어 있습니다.');
+      const existing = d.tasks.find(task=>task.id===requestId);
+      if (existing) { if (existing.title !== trimmed) throw new Error('이미 사용한 requestId입니다. 다른 작업에는 새 UUID를 사용하세요.'); return; }
+      if (d.receipts.some(receipt=>receipt.taskId===requestId)) throw new Error('정리된 작업의 requestId입니다. 새 UUID로 작업을 만드세요.');
+      if (d.tasks.length >= 100) throw new Error('작업은 최대 100개입니다. 완료 로그를 비운 뒤 새 작업을 만드세요.');
+      const now=Date.now(); d.tasks.unshift({id:requestId,title:trimmed,counts:emptyTaskCounts(),createdAt:now,updatedAt:now});
+    });
+    return this.taskSnapshot(requestId);
+  }
+  async cancelTask(id: string): Promise<TaskSnapshot> {
+    this.task(id);
+    await this.store.update(d=>{const task=d.tasks.find(task=>task.id===id)!;task.cancelledAt??=Date.now();task.updatedAt=Date.now();});
+    const ids=this.store.data.jobs.filter(job=>job.taskId===id&&!terminal(job.state)).map(job=>job.id);
+    for (const jobId of ids) this.cancellations.add(jobId);
+    for (const jobId of ids) await this.cancel(jobId);
+    return this.taskSnapshot(id);
+  }
+  private insertLog(d: Store['data'], job: Job): void {
+    if (d.jobs.length >= 200) {
+      const index=d.jobs.findLastIndex(job=>terminal(job.state));
+      if (index<0) throw new Error('대기·실행 요청이 200개입니다. 일부를 완료하거나 취소하세요.');
+      d.jobs.splice(index,1);
+    }
+    d.jobs.unshift(job);
+  }
+  async beginTaskRead(taskId: string, tool: string, label: string): Promise<string> {
+    const now=Date.now(), id=randomUUID();
+    await this.store.update(d=>{
+      this.requireTaskAvailable(taskId);
+      if (this.paused || this.closing) throw new Error('WWG 연결이 일시 정지되어 있습니다.');
+      this.insertLog(d,{id,requestId:id,projectId:'00000000-0000-4000-8000-000000000000',taskId,kind:'read',tool,label:label.slice(0,8000),state:'running',output:'',createdAt:now,updatedAt:now});
+    });
+    return id;
+  }
+  checkTaskRead(id: string): void {
+    const job=this.job(id);
+    this.requireTaskAvailable(job.taskId);
+    if (this.cancellations.has(id) || this.paused || this.closing) throw new Error('조회 중 작업 또는 연결이 중지되었습니다.');
+  }
+  async finishTaskRead(id: string, ok: boolean, output: string): Promise<void> {
+    const job=this.job(id), cancelled=this.cancellations.has(id)||this.paused||this.closing||this.task(job.taskId!).cancelledAt!==undefined;
+    await this.finish(id,cancelled?'cancelled':ok?'done':'failed',output);
+    this.cancellations.delete(id);
   }
   jobSnapshot(id: string): Job { const job = this.job(id); return { ...job, output: this.processes.get(id)?.output ?? job.output }; }
   project(id: string): Project {
@@ -92,7 +155,7 @@ export class Workspace extends EventEmitter {
     if (this.revoked.has(id) || !this.project(id).writable) throw new Error('실행 폴더 권한이 변경되었습니다. 다시 요청하세요.');
   }
   private allowed(job: Job): boolean {
-    return !this.paused && !this.closing && !this.revoked.has(job.projectId) && !this.cancellations.has(job.id) && !!this.store.data.folders.find(folder => folder.id === job.projectId);
+    return !this.paused && !this.closing && !this.revoked.has(job.projectId) && !this.cancellations.has(job.id) && (!job.taskId || this.task(job.taskId).cancelledAt === undefined) && !!this.store.data.folders.find(folder => folder.id === job.projectId);
   }
   async addFolders(paths: string[]): Promise<void> {
     const folders: FolderScope[] = [];
@@ -164,7 +227,10 @@ export class Workspace extends EventEmitter {
     } finally { for (const id of ids) this.revoked.delete(id); this.changed(); }
   }
   async clearLogs(): Promise<void> {
-    await this.store.flushLazy(); await this.store.update(d => { d.jobs = d.jobs.filter(job => !terminal(job.state)); });
+    await this.store.flushLazy(); await this.store.update(d => {
+      d.jobs = d.jobs.filter(job => !terminal(job.state));
+      d.tasks = d.tasks.filter(task=>['waiting','pending','queued','running','stopping'].includes(taskState(task)));
+    });
     this.changed();
   }
   propose(input: Proposal): Promise<Job> {
@@ -186,6 +252,7 @@ export class Workspace extends EventEmitter {
     // Identity is the caller's request; a patch's derived content depends on the file and is excluded.
     const requestHash = fingerprint(input);
     const previous = this.retry(input.requestId, requestHash); if (previous) return previous;
+    this.requireTaskAvailable(input.taskId);
     this.requireWritable(input.projectId);
     if (!['write','delete','command'].includes(input.kind)) throw new Error('지원하지 않는 요청입니다.');
     if (input.kind === 'command' && (!input.command || input.command.length > 8000 || input.command.includes('\0'))) throw new Error('명령 형식이 올바르지 않습니다.');
@@ -210,6 +277,7 @@ export class Workspace extends EventEmitter {
     const job: Job = { ...request, id: randomUUID(), requestHash, approval: automatic ? 'automatic' : 'manual', label: (request.kind === 'command' ? request.command! : path.join(this.project(request.projectId).path,request.path!)).slice(0,8000), directory: request.kind === 'command' ? path.resolve(this.project(request.projectId).path,request.path ?? '') : this.project(request.projectId).path, state: automatic ? 'queued' : 'pending', before, output: '', createdAt: now, updatedAt: now };
     await this.store.update(d => {
       this.requireWritable(input.projectId);
+      this.requireTaskAvailable(input.taskId);
       const currentMode = this.project(input.projectId).approvalMode ?? 'review';
       const currentlyAutomatic = currentMode === 'automatic';
       job.approval = currentlyAutomatic ? 'automatic' : 'manual'; job.state = currentlyAutomatic ? 'queued' : 'pending';
@@ -221,13 +289,8 @@ export class Workspace extends EventEmitter {
         if (index < 0) throw new Error('최근 24시간의 중복 실행 방지 기록이 10,000개입니다. 잠시 후 다시 시도하세요.');
         d.receipts.splice(index, 1);
       }
-      if (d.jobs.length >= 200) {
-        const index = d.jobs.findLastIndex(j => terminal(j.state));
-        if (index < 0) throw new Error('대기·실행 요청이 200개입니다. 일부를 완료하거나 취소하세요.');
-        d.jobs.splice(index, 1);
-      }
-      d.jobs.unshift(job);
-      d.receipts.push({ id: job.id, requestId: job.requestId, projectId: job.projectId, requestHash: job.requestHash, kind: job.kind, state: job.state, createdAt: now, updatedAt: now });
+      this.insertLog(d,job);
+      d.receipts.push({ id: job.id, requestId: job.requestId, projectId: job.projectId, taskId:job.taskId, requestHash: job.requestHash, kind: job.kind, state: job.state, createdAt: now, updatedAt: now });
     });
     this.changed(); this.pump(); return this.jobSnapshot(job.id);
   }
@@ -236,7 +299,7 @@ export class Workspace extends EventEmitter {
     if (job.state !== 'pending') throw new Error('이미 처리된 요청입니다.');
     if (!accept) { await this.finish(id, 'declined', '사용자가 거절했습니다.'); return; }
     this.requireWritable(job.projectId);
-    await this.store.update(d => { const j = d.jobs.find(j => j.id === id)!; if (j.state !== 'pending') throw new Error('이미 처리된 요청입니다.'); j.state = 'queued'; j.updatedAt = Date.now(); });
+    await this.store.update(d => { this.requireTaskAvailable(job.taskId); const j = d.jobs.find(j => j.id === id)!; if (j.state !== 'pending') throw new Error('이미 처리된 요청입니다.'); j.state = 'queued'; j.updatedAt = Date.now(); });
     this.changed(); this.pump();
   }
   private pump(): void {
@@ -369,19 +432,17 @@ export class Workspace extends EventEmitter {
       const r = d.receipts.find(r => r.id === id); if (r) { r.state = state; r.updatedAt = j.updatedAt; }
     }); this.changed();
   }
-  audit(tool: string, ok: boolean, label: string, output: string, hasJob = false): void {
+  audit(tool: string, ok: boolean, label: string, output: string, hasJob = false, taskId?: string): void {
     if (this.closing) return;
     this.lastCall = Date.now();
-    if (!hasJob && !['wwg_status','job_get','logs_list'].includes(tool)) {
+    if (!hasJob && !['wwg_status','job_get','logs_list','task_create','tasks_list','task_get','task_cancel'].includes(tool)) {
       const now = this.lastCall, id = randomUUID();
-      const job: Job = { id, requestId:id, projectId:'00000000-0000-4000-8000-000000000000', kind: ['projects_list','folders_list','files_list','file_read','files_read_batch'].includes(tool) ? 'read' : 'request', tool, label:label.slice(0,8000), state:ok?'done':'failed', output:output.slice(-MAX_OUTPUT), createdAt:now, updatedAt:now };
+      const attached=taskId&&this.store.data.tasks.some(task=>task.id===taskId&&task.cancelledAt===undefined)?taskId:undefined;
+      const job: Job = { id, requestId:id, projectId:'00000000-0000-4000-8000-000000000000', taskId:attached, kind: ['projects_list','folders_list','files_list','file_read','files_read_batch'].includes(tool) ? 'read' : 'request', tool, label:label.slice(0,8000), state:ok?'done':'failed', output:output.slice(-MAX_OUTPUT), createdAt:now, updatedAt:now };
       this.store.updateLazy(d => {
-        if (d.jobs.length >= 200) {
-          const index = d.jobs.findLastIndex(job => terminal(job.state));
-          if (index < 0) throw new Error('승인 대기·실행 요청이 가득 찼습니다.');
-          d.jobs.splice(index,1);
-        }
-        d.jobs.unshift(job);
+        // A task may have been cleared while this audit was waiting to be persisted.
+        if (job.taskId && !d.tasks.some(task=>task.id===job.taskId)) delete job.taskId;
+        this.insertLog(d,job);
       });
     }
     this.outputChanged();

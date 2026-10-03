@@ -2,14 +2,14 @@ import { createHash } from 'node:crypto';
 import type { Job } from '../shared';
 
 export interface TextEdit { oldText: string; newText: string }
-export type Proposal = Pick<Job, 'projectId' | 'requestId' | 'kind' | 'path' | 'content' | 'expectedHash' | 'command' | 'environment' | 'tool'> & { edits?: TextEdit[] };
+export type Proposal = Pick<Job, 'projectId' | 'requestId' | 'taskId' | 'kind' | 'path' | 'content' | 'expectedHash' | 'command' | 'environment' | 'tool'> & { edits?: TextEdit[] };
 export const terminal = (state: Job['state']): boolean => !['pending', 'queued', 'running'].includes(state);
 
 /** A durable digest preserves retry identity after source text is purged. */
 export function fingerprint(input: Partial<Proposal>): string {
-  // Keep the retired task slot so existing request receipts stay valid.
+  // The existing task slot stays null for ungrouped requests, preserving their receipts.
   const fields = ['projectId', 'taskId', 'kind', 'path', 'content', 'expectedHash', 'command'] as const;
-  const values: unknown[] = fields.map(key => key === 'taskId' ? null : input[key] ?? null);
+  const values: unknown[] = fields.map(key => input[key] ?? null);
   // A patch is identified by its edits (its content is derived). Appending keeps existing receipts valid.
   if (input.edits) values.push(input.edits.map(edit => [edit.oldText, edit.newText]));
   if (input.environment?.length) values.push(['environment', [...input.environment].sort()]);

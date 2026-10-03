@@ -10,6 +10,7 @@ const api: WorkroomAPI = {
   clearLogs: () => ipcRenderer.invoke('logs:clear'),
   decide: (id,accept) => ipcRenderer.invoke('job:decide',id,accept),
   cancelJob: id => ipcRenderer.invoke('job:cancel',id),
+  cancelTask: id => ipcRenderer.invoke('task:cancel',id),
   pause: value => ipcRenderer.invoke('pause',value),
   tunnelStatus: () => ipcRenderer.invoke('tunnel:status'),
   inspectTunnel: () => ipcRenderer.invoke('tunnel:inspect'),

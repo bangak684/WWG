@@ -1,5 +1,5 @@
 import './style.css';
-import type { Snapshot, Job, TunnelStatus, ConnectionLink, NavigationTarget } from '../shared';
+import type { Snapshot, Job, TaskSnapshot, TaskState, TunnelStatus, ConnectionLink, NavigationTarget } from '../shared';
 const api = window.workroom, root = document.querySelector<HTMLDivElement>('#app')!;
 let data: Snapshot;
 let tunnel: TunnelStatus = {installed:false,phase:'stopped',tunnelId:'',message:''};
@@ -7,8 +7,10 @@ let tab: NavigationTarget['tab'] = 'logs';
 let initialized = false, tunnelBusy = false, onlyPending = false, limit = 40;
 let toastTimer: ReturnType<typeof setTimeout>;
 const details = new Set<string>();
+const collapsedTasks = new Set<string>();
 const escape = (value:unknown):string => String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 const labels: Record<Job['state'],string> = {pending:'승인 대기',queued:'실행 대기',running:'실행 중',done:'완료',failed:'실패 / 차단',declined:'거절',cancelled:'중지됨'};
+const taskLabels: Record<TaskState,string> = {waiting:'요청 대기',pending:'승인 대기',queued:'실행 대기',running:'실행 중',stopping:'중지 중',done:'요청 완료',failed:'실패 / 거절',cancelled:'중지됨'};
 const kinds: Record<Job['kind'],string> = {command:'명령',write:'파일 변경',delete:'파일 삭제',read:'파일 조회',request:'요청',access:'접근 요청'};
 const toolLabels:Record<string,string> = {files_list:'폴더 조회',file_read:'파일 읽기',files_read_batch:'파일 일괄 읽기',file_propose:'파일 변경',file_patch:'파일 수정',file_delete:'파일 삭제',command_propose:'명령 실행'};
 function toast(message:string):void {
@@ -41,7 +43,16 @@ function logCard(job:Job):string {
 }
 function logsView():string {
   const logs=data.jobs.filter(job=>!onlyPending||job.state==='pending');
-  return `<div class="section-heading"><div><h1>실행 로그</h1><p>ChatGPT에서 받은 파일·명령 요청과 실행 결과를 확인합니다.</p></div><button class="quiet" data-action="clear-logs" ${data.jobs.some(job=>!['pending','queued','running'].includes(job.state))?'':'disabled'}>완료 로그 비우기</button></div><div class="log-filters"><button data-filter="all" aria-pressed="${!onlyPending}">전체</button><button data-filter="pending" aria-pressed="${onlyPending}">승인 대기 ${data.jobs.filter(job=>job.state==='pending').length}</button></div>${logs.length?`<div class="logs">${logs.slice(0,limit).map(logCard).join('')}</div>${logs.length>limit?'<button class="more" data-action="more">이전 로그 더 보기</button>':''}`:`<div class="empty"><span>⌘</span><h2>${onlyPending?'승인이 필요한 요청이 없습니다.':'아직 받은 요청이 없습니다.'}</h2><p>${onlyPending?'요청이 도착하면 이곳에 승인 버튼이 표시됩니다.':'접근 폴더를 선택하고 웹 ChatGPT에서 작업을 요청하세요.'}</p></div>`}<p class="retention">최근 요청 200개를 보관합니다. 파일 조회는 내용 대신 경로와 처리 결과만 남깁니다.</p>`;
+  const visible=logs.slice(0,limit), groups=data.tasks.filter(task=>visible.some(job=>job.taskId===task.id)||(!onlyPending&&!data.jobs.some(job=>job.taskId===task.id)));
+  const units=[...groups.map(task=>({time:task.updatedAt,html:taskGroup(task,visible.filter(job=>job.taskId===task.id))})),...visible.filter(job=>!job.taskId).map(job=>({time:job.createdAt,html:logCard(job)}))].sort((a,b)=>b.time-a.time);
+  const clearable=data.jobs.some(job=>!['pending','queued','running'].includes(job.state))||data.tasks.some(task=>['done','failed','cancelled'].includes(task.state));
+  return `<div class="section-heading"><div><h1>실행 로그</h1><p>관련 요청은 작업별로 묶어 표시합니다. 작업을 펼쳐 결과와 필요한 승인을 확인하세요.</p></div><button class="quiet" data-action="clear-logs" ${clearable?'':'disabled'}>완료 로그 비우기</button></div><div class="log-filters"><button data-filter="all" aria-pressed="${!onlyPending}">전체</button><button data-filter="pending" aria-pressed="${onlyPending}">승인 대기 ${data.jobs.filter(job=>job.state==='pending').length}</button></div>${units.length?`<div class="logs">${units.map(unit=>unit.html).join('')}</div>${logs.length>limit?'<button class="more" data-action="more">이전 로그 더 보기</button>':''}`:`<div class="empty"><span>⌘</span><h2>${onlyPending?'승인이 필요한 요청이 없습니다.':'아직 받은 요청이 없습니다.'}</h2><p>${onlyPending?'요청이 도착하면 이곳에 승인 버튼이 표시됩니다.':'접근 폴더를 선택하고 웹 ChatGPT에서 작업을 요청하세요.'}</p></div>`}<p class="retention">최근 요청 200개와 작업 묶음 100개를 보관합니다. 요청 완료는 현재까지 등록된 요청의 실행 결과입니다. 파일 조회 내용은 저장하지 않습니다.</p>`;
+}
+function taskGroup(task:TaskSnapshot,jobs:Job[]):string {
+  const active=['waiting','pending','queued','running','stopping'].includes(task.state), key='task-'+task.id;
+  const open=details.has(key)||(active&&!collapsedTasks.has(task.id));
+  const errors=task.counts.failed+task.counts.declined, archived=task.totalRequests-task.retainedRequests;
+  return `<details class="task-group" data-task="${task.id}" data-detail="${key}" ${open?'open':''}><summary><span class="task-title">${escape(task.title)}</span><span class="task-count">완료 ${task.counts.done} / 요청 ${task.totalRequests}${errors?` · 실패·거절 ${errors}`:''}</span><span class="state ${task.state}">${taskLabels[task.state]}</span></summary><div class="task-body">${task.cancelledAt===undefined&&active?`<div class="task-actions"><button data-cancel-task="${task.id}">작업 중지</button></div>`:''}${jobs.map(logCard).join('')||'<p class="task-empty">'+(task.totalRequests?'표시할 상세 요청 로그가 없습니다.':'ChatGPT의 다음 파일·명령 요청을 기다립니다.')+'</p>'}${archived?`<p class="task-note">이전 요청 ${archived}개의 상세 로그는 정리됐으며 결과 수는 유지합니다.</p>`:''}${jobs.length<task.retainedRequests?'<p class="task-note">다른 요청은 전체 필터 또는 이전 로그에서 확인할 수 있습니다.</p>':''}</div></details>`;
 }
 function connectionView():string {
   const active=tunnel.phase!=='stopped', locked=active||tunnelBusy;
@@ -71,6 +82,7 @@ root.addEventListener('click',event=>{
   if(button.dataset.approve){void action(()=>api.decide(button.dataset.approve!,true));return;}
   if(button.dataset.decline){void action(()=>api.decide(button.dataset.decline!,false));return;}
   if(button.dataset.cancel){void action(()=>api.cancelJob(button.dataset.cancel!));return;}
+  if(button.dataset.cancelTask){void action(()=>api.cancelTask(button.dataset.cancelTask!));return;}
   if(button.dataset.removeFolder){void action(()=>api.removeFolder(button.dataset.removeFolder!));return;}
   if(button.dataset.link){void action(()=>api.openConnectionLink(button.dataset.link as ConnectionLink));return;}
   switch(button.dataset.action){
@@ -97,7 +109,7 @@ root.addEventListener('submit',event=>{
     void(async()=>{try{await api.startTunnel(id,key);}catch(error){toast((error as Error).message);}finally{tunnelBusy=false;await refresh().catch(error=>toast(error.message));}})();
   }
 });
-root.addEventListener('toggle',event=>{const node=event.target as HTMLDetailsElement;if(node.dataset.detail){if(node.open)details.add(node.dataset.detail);else details.delete(node.dataset.detail);}},true);
+root.addEventListener('toggle',event=>{const node=event.target as HTMLDetailsElement;if(node.dataset.detail){if(node.open)details.add(node.dataset.detail);else details.delete(node.dataset.detail);}if(node.dataset.task){if(node.open)collapsedTasks.delete(node.dataset.task);else collapsedTasks.add(node.dataset.task);}},true);
 api.onChange(()=>{void refresh().catch(error=>toast(error.message));});
 api.onNavigate(target=>{if(data)navigate(target.tab);else{tab=target.tab;initialized=true;}});
 root.innerHTML='<div class="loading">WWG 연결을 확인하고 있습니다…</div>';

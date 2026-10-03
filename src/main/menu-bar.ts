@@ -10,10 +10,11 @@ export function menuBarTemplate(snapshot:Snapshot,tunnel:TunnelStatus,actions:Me
   const run=(fn:()=>unknown)=>():void=>{try{void Promise.resolve(fn()).catch(actions.error);}catch(error){actions.error(error);}};
   const pending=snapshot.jobs.filter(job=>job.state==='pending').length;
   const automatic=snapshot.approvalMode==='automatic';
+  const activeTasks=snapshot.tasks.filter(task=>['waiting','pending','queued','running','stopping'].includes(task.state)).length;
   const state=snapshot.error?'연결 오류':snapshot.paused?'일시 정지':tunnel.phase==='ready'?'ChatGPT 터널 연결됨':'ChatGPT 연결 전';
   return [
     {id:'wwg-status',label:state,enabled:false},
-    {id:'wwg-logs',label:pending?`실행 로그 · 승인 대기 ${pending}건`:'실행 로그',click:run(()=>actions.show({tab:'logs'}))},
+    {id:'wwg-logs',label:pending?`실행 로그 · 승인 대기 ${pending}건`:activeTasks?`실행 로그 · 진행 작업 ${activeTasks}개`:'실행 로그',click:run(()=>actions.show({tab:'logs'}))},
     {id:'wwg-connect',label:'ChatGPT 연결',click:run(()=>actions.show({tab:'connect'}))},
     {type:'separator'},
     {id:'wwg-automatic',label:automatic?'자동승인 끄기 · 수동승인으로 전환':'자동승인 시작…',enabled:!snapshot.paused,click:run(()=>automatic?actions.stopAutomatic():actions.startAutomatic())},

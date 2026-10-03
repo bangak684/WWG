@@ -106,10 +106,11 @@ else {
     handle('automatic:stop', () => service.disableAutomatic());
     handle('environment:set', names => service.setEnvironmentNames(names));
     handle('logs:clear', async () => {
-      if (await confirm('완료된 실행 로그를 비울까요?','승인 대기·실행 중인 요청은 남겨 둡니다. 중복 실행 방지 정보는 유지합니다.','로그 비우기')) await service.clearLogs();
+      if (await confirm('완료된 실행 로그를 비울까요?','완료된 작업 묶음도 정리합니다. 요청 대기·승인 대기·실행 중인 작업과 중복 실행 방지 정보는 유지합니다.','로그 비우기')) await service.clearLogs();
     });
     handle('job:decide', (j,a) => service.decide(id.parse(j),z.boolean().parse(a)));
     handle('job:cancel', j => service.cancel(id.parse(j)));
+    handle('task:cancel', t => service.cancelTask(id.parse(t)));
     handle('pause', value => service.setPaused(z.boolean().parse(value)));
     handle('tunnel:status', () => tunnel!.snapshot());
     handle('tunnel:inspect', () => tunnel!.inspect());
@@ -153,7 +154,7 @@ else {
       refreshMenu=(): void => {
         if(!tray||tray.isDestroyed()||shuttingDown)return;
         const snapshot=service.snapshot(), status=tunnel!.snapshot();
-        const key=JSON.stringify([snapshot.connected,snapshot.paused,snapshot.error,status.phase,snapshot.folders,snapshot.approvalMode,snapshot.rememberAutomatic,snapshot.jobs.map(j=>[j.id,j.projectId,j.state])]);
+        const key=JSON.stringify([snapshot.connected,snapshot.paused,snapshot.error,status.phase,snapshot.folders,snapshot.approvalMode,snapshot.rememberAutomatic,snapshot.jobs.map(j=>[j.id,j.projectId,j.state]),snapshot.tasks.map(t=>[t.id,t.state])]);
         if(key===previousMenu)return;
         previousMenu=key;
         const template=menuBarTemplate(snapshot,status,{
