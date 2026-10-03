@@ -30,12 +30,18 @@ jobs:
         run: npm run setup:electron
       - name: Check types
         run: npm run typecheck
+      - name: Check privacy notice boundaries
+        run: node scripts/test-privacy-notice.mjs
+      - name: Check log retention
+        run: node scripts/test-log-retention.mjs
       - name: Check Windows command isolation
         run: node scripts/test-windows-command.mjs
       - name: Check approval and command shutdown
         run: node scripts/test-command-service.mjs
       - name: Package Windows x64 portable
         run: npm run package:win
+      - name: Check privacy notice in the actual window
+        run: node scripts/test-privacy-window.mjs
       - name: Check closing the Windows window
         run: node scripts/test-window-close.mjs
       - name: Upload versioned release files

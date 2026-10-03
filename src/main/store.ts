@@ -6,11 +6,15 @@ import { atomicPrivateWrite, readPrivateText } from './private-io';
 import { fingerprint, terminal } from './request';
 import { environmentNames } from './command-environment';
 import { emptyTaskCounts, syncTaskCounts } from './tasks';
+import { STORED_LOG_LIMIT } from '../shared';
+import { retainHistory } from './log-retention';
+import { PRIVACY_NOTICE_VERSION } from '../privacy-notice';
 
-export interface Data { version: 2; folders: FolderScope[]; settings: { approvalMode: ApprovalMode; environmentNames: string[]; rememberAutomatic: boolean }; jobs: Job[]; receipts: Receipt[]; tasks: Task[] }
+export interface Data { version: 2; folders: FolderScope[]; settings: { approvalMode: ApprovalMode; environmentNames: string[]; rememberAutomatic: boolean; privacyNoticeVersion: number }; jobs: Job[]; receipts: Receipt[]; tasks: Task[] }
 type Mutation = (draft: Data) => void;
 const id = z.string().uuid();
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
+const MAX_WORKSPACE_BYTES = 256 * 1024 * 1024;
 const state = z.enum(['pending', 'queued', 'running', 'done', 'failed', 'declined', 'cancelled']);
 const folders = z.array(z.object({ id, path: z.string().max(8192), approvedFolders: z.array(z.string().max(1024)).max(500).default([]) })).max(100);
 const jobs = z.array(z.object({
@@ -19,16 +23,20 @@ const jobs = z.array(z.object({
     before: z.string().max(262144).optional(), requestHash: digest.optional(), resultHash: digest.optional(), approval: z.enum(['manual','automatic']).optional(),
     tool: z.string().max(128).optional(), directory: z.string().max(8192).optional(),
     output: z.string().max(64000), exitCode: z.number().nullable().optional(), createdAt: z.number(), updatedAt: z.number()
-  }).refine(job => !['read','request'].includes(job.kind) || terminal(job.state) || (job.taskId && job.kind === 'read' && job.state === 'running'), '조회 로그는 실행 대기 상태일 수 없습니다.')).max(200);
-const receipts = z.array(z.object({ id, requestId: id, projectId: id, taskId: id.optional(), requestHash: digest.optional(), kind: z.enum(['write','delete','command','access']), state, createdAt: z.number(), updatedAt: z.number() })).max(10000).default([]);
+  }).refine(job => !['read','request'].includes(job.kind) || terminal(job.state) || (job.taskId && job.kind === 'read' && job.state === 'running'), '조회 로그는 실행 대기 상태일 수 없습니다.')).max(STORED_LOG_LIMIT);
+const receipt = z.object({ id, requestId: id, projectId: id, taskId: id.optional(), requestHash: digest.optional(), kind: z.enum(['write','delete','command','access']), state, createdAt: z.number(), updatedAt: z.number() });
+const receipts = z.array(receipt).max(STORED_LOG_LIMIT).default([]);
+const legacyReceipts = z.array(receipt).max(10000).default([]);
 const count = z.number().int().min(0);
 const tasks = z.array(z.object({ id, title: z.string().trim().min(1).max(200), counts: z.object({ pending:count, queued:count, running:count, done:count, failed:count, declined:count, cancelled:count }).default(emptyTaskCounts), createdAt:z.number(), updatedAt:z.number(), cancelledAt:z.number().optional() })).max(100).default([]);
-const defaultSettings = (): Data['settings'] => ({ approvalMode: 'review', environmentNames: [], rememberAutomatic: false });
+const defaultSettings = (): Data['settings'] => ({ approvalMode: 'review', environmentNames: [], rememberAutomatic: false, privacyNoticeVersion: 0 });
 const schema = z.object({
   version: z.literal(2), folders,
-  settings: z.object({ approvalMode: z.enum(['review','automatic']).default('review'), environmentNames: environmentNames.default([]), rememberAutomatic: z.boolean().default(false) }).default(defaultSettings),
+  settings: z.object({ approvalMode: z.enum(['review','automatic']).default('review'), environmentNames: environmentNames.default([]), rememberAutomatic: z.boolean().default(false), privacyNoticeVersion: z.number().int().min(0).default(0) }).default(defaultSettings),
   jobs, receipts, tasks
 });
+// Read the old 10,000-receipt format once; every subsequent write uses the new limit.
+const loadSchema = schema.extend({ receipts: legacyReceipts });
 
 export class Store extends EventEmitter {
   data: Data = { version: 2, folders: [], settings: defaultSettings(), jobs: [], receipts: [], tasks: [] };
@@ -39,24 +47,24 @@ export class Store extends EventEmitter {
 
   async load(): Promise<void> {
     try {
-      const raw = JSON.parse(await readPrivateText(this.file));
+      const raw = JSON.parse(await readPrivateText(this.file,MAX_WORKSPACE_BYTES));
       if (raw?.version === 1) {
         // Preserve granted boundaries and execution logs. Retired task/activity data is omitted.
-        const previous = z.object({ version: z.literal(1), projects: folders, jobs, receipts }).parse(raw);
+        const previous = z.object({ version: z.literal(1), projects: folders, jobs, receipts:legacyReceipts }).parse(raw);
         for (const job of previous.jobs) delete job.taskId;
         for (const receipt of previous.receipts) delete receipt.taskId;
         for (const job of previous.jobs) {
           const folder = previous.projects.find(folder => folder.id === job.projectId);
           if (folder) { job.directory = folder.path; if (job.kind !== 'command' && job.path) job.label = path.resolve(folder.path,job.path).slice(0,8000); }
         }
-        this.data = schema.parse({ version: 2, folders: previous.projects.filter(folder => folder.approvedFolders.length), settings: defaultSettings(), jobs: previous.jobs, receipts: previous.receipts });
-      } else this.data = schema.parse(raw);
+        this.data = loadSchema.parse({ version: 2, folders: previous.projects.filter(folder => folder.approvedFolders.length), settings: defaultSettings(), jobs: previous.jobs, receipts: previous.receipts });
+      } else this.data = loadSchema.parse(raw);
     }
     catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('설정과 실행 로그를 읽을 수 없습니다. 원본을 보존했습니다.');
     }
     // Only a user's explicit persistent opt-in restores authority. Old jobs are never replayed.
-    if (!(this.data.settings.approvalMode === 'automatic' && this.data.settings.rememberAutomatic && this.data.folders.length)) {
+    if (!(this.data.settings.privacyNoticeVersion === PRIVACY_NOTICE_VERSION && this.data.settings.approvalMode === 'automatic' && this.data.settings.rememberAutomatic && this.data.folders.length)) {
       this.data.settings.approvalMode = 'review'; this.data.settings.rememberAutomatic = false;
     }
     const beforeRestart = structuredClone(this.data.jobs);
@@ -92,15 +100,16 @@ export class Store extends EventEmitter {
         const before = draft.jobs.map(job => ({ ...job }));
         mutate(draft);
         syncTaskCounts(before, draft.jobs, draft.tasks);
+        retainHistory(draft);
         const valid = schema.parse(draft);
         const text = JSON.stringify(valid);
-        if (Buffer.byteLength(text) > 32 * 1024 * 1024) throw new Error('실행 로그가 32MB를 초과했습니다. 완료 로그를 비우세요.');
+        if (Buffer.byteLength(text) > MAX_WORKSPACE_BYTES) throw new Error('설정과 실행 로그가 256MB를 초과했습니다. 완료 로그를 비우세요.');
         writing = true;
         await atomicPrivateWrite(this.file, text);
         this.data = valid;
         this.emit('change');
       } catch (err) {
-        this.lazyMutations = [...lazy, ...this.lazyMutations].slice(-200);
+        this.lazyMutations = [...lazy, ...this.lazyMutations].slice(-STORED_LOG_LIMIT);
         if (writing) this.emit('warning', '실행 로그 저장에 실패했습니다. 연결을 일시 정지하고 디스크 상태를 확인하세요.');
         throw err;
       }
@@ -112,7 +121,7 @@ export class Store extends EventEmitter {
   /** Read/rejected-request logs only: execution/approval state always uses durable update(). */
   updateLazy(mutate: Mutation): void {
     this.lazyMutations.push(mutate);
-    if (this.lazyMutations.length > 200) this.lazyMutations.shift();
+    if (this.lazyMutations.length > STORED_LOG_LIMIT) this.lazyMutations.shift();
     if (this.lazyTimer) return;
     this.lazyTimer = setTimeout(() => {
       this.lazyTimer = undefined;

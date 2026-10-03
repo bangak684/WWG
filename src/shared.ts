@@ -1,4 +1,6 @@
 export const APP_VERSION = '1.0.0';
+export const VISIBLE_LOG_LIMIT = 200;
+export const STORED_LOG_LIMIT = 1000;
 export type ApprovalMode = 'automatic' | 'review';
 export interface FolderScope { id: string; path: string; approvedFolders: string[] }
 // The file/sandbox layer receives an execution scope, never a project-management model.
@@ -18,15 +20,18 @@ export interface TaskSnapshot extends Task { state: TaskState; totalRequests: nu
 export interface Snapshot {
   folders: FolderScope[]; approvalMode: ApprovalMode; environmentNames: string[]; rememberAutomatic: boolean; jobs: Job[]; tasks: TaskSnapshot[];
   connected: boolean; paused: boolean; lastCall: number | null;
+  canClearLogs: boolean;
+  privacyNoticeAccepted: boolean;
   endpoint: null; error: string | null;
   version: string; runtime?: { packaged: boolean; platform: string; arch: string };
 }
 export interface FileEntry { name: string; directory: boolean }
 export interface FileRead { path: string; content: string; hash: string }
 export interface TunnelStatus { installed: boolean; phase: 'stopped' | 'starting' | 'ready' | 'error'; tunnelId: string; message: string }
-export type ConnectionLink = 'keys' | 'tunnels' | 'plugins' | 'download' | 'guide';
+export type ConnectionLink = 'keys' | 'tunnels' | 'plugins' | 'download' | 'guide' | 'support';
 export interface NavigationTarget { tab: 'logs'|'connect'|'settings' }
 export interface WorkroomAPI {
+  acceptPrivacyNotice(version: number): Promise<void>; quit(): Promise<void>;
   snapshot(): Promise<Snapshot>; selectFolders(): Promise<void>; removeFolder(id: string): Promise<void>;
   startAutomatic(): Promise<void>; stopAutomatic(): Promise<void>;
   setEnvironmentNames(names: string[]): Promise<void>; clearLogs(): Promise<void>;

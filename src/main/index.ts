@@ -10,7 +10,8 @@ import { Tunnel } from './tunnel';
 import { ensurePrivateDirectory } from './private-io';
 import { menuBarTemplate } from './menu-bar';
 import { menuBarIcon } from './menu-bar-icon';
-import type { NavigationTarget } from '../shared';
+import { APP_VERSION, type NavigationTarget } from '../shared';
+import { PRIVACY_NOTICE_VERSION } from '../privacy-notice';
 
 app.setName('WWG');
 // Keep existing project settings and the single-instance lock across the rename.
@@ -78,14 +79,19 @@ else {
       const result = await dialog.showMessageBox(window!, { type: 'warning', message, detail, buttons: ['취소', action], defaultId: 0, cancelId: 0, noLink: true });
       return result.response === 1;
     };
-    handle('snapshot', () => ({ ...service.snapshot(), version: app.getVersion(), runtime: { packaged: app.isPackaged, platform: process.platform, arch: process.arch } }));
-    handle('folder:select', async () => {
+    handle('snapshot', () => ({ ...service.snapshot(), version: app.isPackaged?app.getVersion():APP_VERSION, runtime: { packaged: app.isPackaged, platform: process.platform, arch: process.arch } }));
+    handle('privacy:accept', version => service.acceptPrivacyNotice(z.literal(PRIVACY_NOTICE_VERSION).parse(version)));
+    handle('app:quit', () => { app.quit(); });
+    const selectFolders = async (): Promise<void> => {
+      service.requirePrivacyNotice();
       const result = await dialog.showOpenDialog(window!, { title:'접근할 폴더 선택', buttonLabel:'접근 허용', properties:['openDirectory','multiSelections'] });
       if (!result.canceled) await service.addFolders(result.filePaths);
-    });
+    };
+    handle('folder:select', selectFolders);
     handle('folder:remove', value => service.removeFolder(id.parse(value)));
     let automaticDialog = false;
     const startAutomatic = async (): Promise<void> => {
+      service.requirePrivacyNotice();
       if (automaticDialog) return;
       const folders = structuredClone(store.data.folders);
       if (!folders.length) throw new Error('접근 폴더를 먼저 선택하세요.');
@@ -94,7 +100,7 @@ else {
         const scope = folders.flatMap(folder => folder.approvedFolders.map(relative => path.resolve(folder.path,relative))).join('\n');
         const options: Electron.MessageBoxOptions = {
           type:'warning', message:'자동승인을 시작할까요?',
-          detail:`접근 범위:\n${scope}\n\n허용한 폴더의 파일 변경·대량 이동·삭제를 추가 확인 없이 실행합니다. 승인 대기 중인 요청도 실행합니다. 셸 명령과 네트워크 사용도 자동승인합니다.${process.platform==='win32'?' Windows 명령은 비밀파일을 제외한 작업 복사본에서 실행하고 결과를 원본에 반영합니다.':''}\n.env를 포함한 비밀파일과 허용 범위 밖 접근은 계속 차단됩니다.`,
+          detail:`접근 범위:\n${scope}\n\n허용한 폴더의 파일 변경·대량 이동·삭제를 추가 확인 없이 실행합니다. 승인 대기 중인 요청도 실행합니다. 셸 명령과 네트워크 사용도 자동승인합니다.${process.platform==='win32'?' Windows 명령은 보호 경로를 제외한 작업 복사본에서 실행하고 결과를 원본에 반영합니다.':''}\n.env*와 허용 범위 밖 접근은 계속 차단됩니다.`,
           buttons:['취소','자동승인 시작'], defaultId:0, cancelId:0, noLink:true,
           checkboxLabel:'다음 실행에도 자동승인 유지', checkboxChecked:store.data.settings.rememberAutomatic
         };
@@ -106,7 +112,7 @@ else {
     handle('automatic:stop', () => service.disableAutomatic());
     handle('environment:set', names => service.setEnvironmentNames(names));
     handle('logs:clear', async () => {
-      if (await confirm('완료된 실행 로그를 비울까요?','완료된 작업 묶음도 정리합니다. 요청 대기·승인 대기·실행 중인 작업과 중복 실행 방지 정보는 유지합니다.','로그 비우기')) await service.clearLogs();
+      if (await confirm('완료된 실행 로그를 비울까요?','화면 밖의 완료 로그와 완료된 작업 묶음도 정리합니다. 요청 대기·승인 대기·실행 중인 작업은 보존하며, 중복 실행 방지 정보는 내부 1,000개 보관 한도 안에서 유지합니다. 이미 ChatGPT에 전달된 내용은 삭제되지 않습니다.','로그 비우기')) await service.clearLogs();
     });
     handle('job:decide', (j,a) => service.decide(id.parse(j),z.boolean().parse(a)));
     handle('job:cancel', j => service.cancel(id.parse(j)));
@@ -114,11 +120,11 @@ else {
     handle('pause', value => service.setPaused(z.boolean().parse(value)));
     handle('tunnel:status', () => tunnel!.snapshot());
     handle('tunnel:inspect', () => tunnel!.inspect());
-    handle('tunnel:start', (tunnelId,key) => { if (service.paused) throw new Error('도구 연결을 재개한 뒤 터널을 연결하세요.'); return tunnel!.start(tunnelId,key,service.endpoint); });
+    handle('tunnel:start', (tunnelId,key) => { service.requirePrivacyNotice(); if (service.paused) throw new Error('도구 연결을 재개한 뒤 터널을 연결하세요.'); return tunnel!.start(tunnelId,key,service.endpoint); });
     handle('tunnel:stop', () => tunnel!.stop());
     handle('tunnel:copy-id', () => { const tunnelId = tunnel!.snapshot().tunnelId; if (!tunnelId) throw new Error('터널 ID를 먼저 설정하세요.'); clipboard.writeText(tunnelId); });
-    const links = { keys: 'https://platform.openai.com/settings/organization/api-keys', tunnels: 'https://platform.openai.com/settings/organization/tunnels', plugins: 'https://chatgpt.com/plugins', download: 'https://github.com/openai/tunnel-client/releases/latest', guide: 'https://developers.openai.com/api/docs/guides/secure-mcp-tunnels' };
-    handle('connection:open', key => shell.openExternal(links[z.enum(['keys','tunnels','plugins','download','guide']).parse(key)]));
+    const links = { keys: 'https://platform.openai.com/settings/organization/api-keys', tunnels: 'https://platform.openai.com/settings/organization/tunnels', plugins: 'https://chatgpt.com/plugins', download: 'https://github.com/openai/tunnel-client/releases/latest', guide: 'https://developers.openai.com/api/docs/guides/secure-mcp-tunnels', support:'https://github.com/bangak684/WWG/issues' };
+    handle('connection:open', key => shell.openExternal(links[z.enum(['keys','tunnels','plugins','download','guide','support']).parse(key)]));
     let loadingWindow: Promise<BrowserWindow> | undefined;
     const createWindow = (): Promise<BrowserWindow> => {
       if(loadingWindow)return loadingWindow;
@@ -155,12 +161,12 @@ else {
       refreshMenu=(): void => {
         if(!tray||tray.isDestroyed()||shuttingDown)return;
         const snapshot=service.snapshot(), status=tunnel!.snapshot();
-        const key=JSON.stringify([snapshot.connected,snapshot.paused,snapshot.error,status.phase,snapshot.folders,snapshot.approvalMode,snapshot.rememberAutomatic,snapshot.jobs.map(j=>[j.id,j.projectId,j.state]),snapshot.tasks.map(t=>[t.id,t.state])]);
+        const key=JSON.stringify([snapshot.privacyNoticeAccepted,snapshot.connected,snapshot.paused,snapshot.error,status.phase,snapshot.folders,snapshot.approvalMode,snapshot.rememberAutomatic,snapshot.jobs.map(j=>[j.id,j.projectId,j.state]),snapshot.tasks.map(t=>[t.id,t.state])]);
         if(key===previousMenu)return;
         previousMenu=key;
         const template=menuBarTemplate(snapshot,status,{
           show:target=>showWorkspace(target),pause:value=>service.setPaused(value),
-          startAutomatic,stopAutomatic:()=>service.disableAutomatic(),selectFolders:async()=>{await showWorkspace({tab:'settings'});const result=await dialog.showOpenDialog(window!,{title:'접근할 폴더 선택',buttonLabel:'접근 허용',properties:['openDirectory','multiSelections']});if(!result.canceled)await service.addFolders(result.filePaths);},stopTunnel:()=>tunnel!.stop(),
+          startAutomatic,stopAutomatic:()=>service.disableAutomatic(),selectFolders:async()=>{await showWorkspace({tab:'settings'});await selectFolders();},stopTunnel:()=>tunnel!.stop(),
           quit:()=>app.quit(),error:error=>dialog.showErrorBox('WWG',error instanceof Error?error.message:String(error))
         });
         tray.setContextMenu(Menu.buildFromTemplate(template));
@@ -172,7 +178,7 @@ else {
     }
     if(process.platform!=='darwin')Menu.setApplicationMenu(null);
     await createWindow();
-    if(process.platform==='darwin'&&store.data.folders.length)app.dock?.hide();
+    if(process.platform==='darwin'&&service.privacyNoticeAccepted&&store.data.folders.length)app.dock?.hide();
     else await showWorkspace();
   }).catch(err => { dialog.showErrorBox('WWG 시작 오류', (err as Error).message); app.quit(); });
   app.on('window-all-closed', () => { if(!tray&&!shuttingDown)app.quit(); });

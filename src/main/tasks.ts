@@ -12,7 +12,7 @@ export function taskState(task: Task): TaskState {
   return c.done ? 'done' : 'waiting';
 }
 
-// Counts retain outcomes when detailed logs are evicted. Removing a log is not a new outcome.
+// Track state transitions during a mutation. Retention then removes expired outcomes.
 export function syncTaskCounts(previous: Job[], current: Job[], tasks: Task[]): void {
   const before = new Map(previous.map(job => [job.id, job]));
   for (const job of current) {

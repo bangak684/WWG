@@ -18,7 +18,7 @@ const data = path.join(base, 'private'), source = path.join(base, 'source');
 await fs.mkdir(data); await fs.mkdir(source);
 await fs.writeFile(path.join(source, '.env'), 'NEVER_RETURN_THIS_PRIVATE_VALUE');
 const store = new Store(path.join(data, 'workspace.json')); await store.load();
-const workspace = new Workspace(store, data); await workspace.addFolders([source]);
+const workspace = new Workspace(store, data); await workspace.acceptPrivacyNotice(1); await workspace.addFolders([source]);
 const projectId = store.data.folders[0].id;
 const windows = process.platform === 'win32';
 const propose = command => workspace.propose({ requestId: randomUUID(), projectId, kind: 'command', path: '', command });

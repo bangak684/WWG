@@ -2,7 +2,7 @@
   "name": "wwg-desktop",
   "version": "1.0.0",
   "private": true,
-  "description": "workwebGPT — web ChatGPT connection and local file/command execution",
+  "description": "WWG — web ChatGPT connection and local file/command execution",
   "author": "WWG",
   "license": "MIT",
   "main": "out/main/index.js",

@@ -7,13 +7,15 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import { Store } from './store';
 import * as files from './files';
-import { APP_VERSION, type ApprovalMode, type Job, type Project, type Snapshot, type FolderScope, type Receipt, type Task, type TaskSnapshot } from '../shared';
+import { APP_VERSION, VISIBLE_LOG_LIMIT, type ApprovalMode, type Job, type Project, type Snapshot, type FolderScope, type Receipt, type Task, type TaskSnapshot } from '../shared';
 import { applyEdits, fingerprint, terminal, type Proposal } from './request';
 import { commandSandbox, inspectCommandTree } from './command-sandbox';
 import { commandEnvironment, outputRedactor, selectedEnvironment, validateEnvironmentNames } from './command-environment';
 import { requireSafeRoot } from './secret-policy';
 import { emptyTaskCounts, taskState } from './tasks';
 import { WindowsCommandWorkspace } from './windows-command';
+import { visibleLogs } from './log-retention';
+import { PRIVACY_NOTICE_VERSION } from '../privacy-notice';
 export { commandEnvironment } from './command-environment';
 
 interface Runtime { process: ChildProcess; output: string; bytes: number; cancelled: boolean; reason: string; killTimer?: NodeJS.Timeout }
@@ -39,6 +41,15 @@ export class Workspace extends EventEmitter {
     store.on('change', () => this.changed());
   }
   changed(): void { for (const wake of this.waiters) wake(); this.emit('change'); }
+  get privacyNoticeAccepted(): boolean { return this.store.data.settings.privacyNoticeVersion === PRIVACY_NOTICE_VERSION; }
+  requirePrivacyNotice(): void {
+    if (!this.privacyNoticeAccepted) throw new Error('WWG에서 개인정보 및 데이터 처리 안내를 먼저 확인하세요.');
+  }
+  async acceptPrivacyNotice(version: number): Promise<void> {
+    if (version !== PRIVACY_NOTICE_VERSION || this.closing) throw new Error('현재 데이터 처리 안내를 다시 확인하세요.');
+    await this.store.update(d => { d.settings.privacyNoticeVersion = version; });
+    this.changed();
+  }
   /** Holds a tool response while automatic work runs, so fast jobs return their final state in one call. */
   async settle(id: string, ms: number): Promise<Job> {
     const active = (): boolean => { const state = this.job(id).state; return state === 'queued' || state === 'running'; };
@@ -62,7 +73,12 @@ export class Workspace extends EventEmitter {
   }
   snapshot(): Snapshot {
     const settings = this.store.data.settings;
-    return { folders: structuredClone(this.store.data.folders), ...settings, jobs: this.store.data.jobs.map(j => this.jobSnapshot(j.id)), tasks: this.taskSnapshots(), connected: !!this.endpoint, paused: this.paused, lastCall: this.lastCall, endpoint: null, error: this.error, version: APP_VERSION };
+    if (!this.privacyNoticeAccepted) return { folders:[], approvalMode:'review', environmentNames:[], rememberAutomatic:false, jobs:[], tasks:[], canClearLogs:false, privacyNoticeAccepted:false, connected:!!this.endpoint, paused:this.paused, lastCall:null, endpoint:null, error:this.error, version:APP_VERSION };
+    const jobs = visibleLogs(this.store.data.jobs).map(job => this.jobSnapshot(job.id));
+    const visibleTasks = new Set(jobs.map(job => job.taskId));
+    const tasks = this.taskSnapshots().filter(task => visibleTasks.has(task.id) || task.totalRequests === 0);
+    const canClearLogs = this.store.data.jobs.some(job => terminal(job.state)) || this.store.data.tasks.some(task => ['done','failed','cancelled'].includes(taskState(task)));
+    return { folders: structuredClone(this.store.data.folders), ...settings, jobs, tasks, canClearLogs, privacyNoticeAccepted:true, connected: !!this.endpoint, paused: this.paused, lastCall: this.lastCall, endpoint: null, error: this.error, version: APP_VERSION };
   }
   private task(id: string): Task {
     const task = this.store.data.tasks.find(task => task.id === id);
@@ -78,6 +94,7 @@ export class Workspace extends EventEmitter {
   }
   taskSnapshots(): TaskSnapshot[] { return this.store.data.tasks.map(task=>this.taskSnapshot(task.id)).sort((a,b)=>b.updatedAt-a.updatedAt); }
   async createTask(requestId: string, title: string): Promise<TaskSnapshot> {
+    this.requirePrivacyNotice();
     if (this.paused || this.closing) throw new Error('WWG 연결이 일시 정지되어 있습니다.');
     const trimmed = title.trim();
     if (!trimmed || trimmed.length > 200 || /[\x00-\x1f\x7f]/.test(trimmed)) throw new Error('작업 이름은 1~200자의 한 줄로 지정하세요.');
@@ -100,14 +117,11 @@ export class Workspace extends EventEmitter {
     return this.taskSnapshot(id);
   }
   private insertLog(d: Store['data'], job: Job): void {
-    if (d.jobs.length >= 200) {
-      const index=d.jobs.findLastIndex(job=>terminal(job.state));
-      if (index<0) throw new Error('대기·실행 요청이 200개입니다. 일부를 완료하거나 취소하세요.');
-      d.jobs.splice(index,1);
-    }
+    if (!terminal(job.state) && d.jobs.filter(job=>!terminal(job.state)).length >= VISIBLE_LOG_LIMIT) throw new Error(`대기·실행 요청은 최대 ${VISIBLE_LOG_LIMIT}개입니다. 일부를 완료하거나 취소하세요.`);
     d.jobs.unshift(job);
   }
   async beginTaskRead(taskId: string, tool: string, label: string): Promise<string> {
+    this.requirePrivacyNotice();
     const now=Date.now(), id=randomUUID();
     await this.store.update(d=>{
       this.requireTaskAvailable(taskId);
@@ -148,17 +162,19 @@ export class Workspace extends EventEmitter {
     if (job) return job;
     const receipt = this.store.data.receipts.find(r => r.id === id);
     if (receipt) return this.receiptJob(receipt);
-    throw new Error('작업 요청을 찾을 수 없습니다.');
+    throw new Error('요청 기록이 삭제됐거나 존재하지 않습니다. 같은 요청을 자동 재실행하지 말고 실제 결과를 확인하세요.');
   }
   private receiptJob(r: Receipt): Job { return { ...r, label: '정리된 실행 기록', output: '이 요청은 이미 처리되었습니다. 원문·출력 기록은 정리되어 재실행하지 않습니다.' }; }
   private requireWritable(id: string): void {
+    this.requirePrivacyNotice();
     if (this.paused || this.closing) throw new Error('WWG 연결이 일시 정지되어 있습니다.');
     if (this.revoked.has(id) || !this.project(id).writable) throw new Error('실행 폴더 권한이 변경되었습니다. 다시 요청하세요.');
   }
   private allowed(job: Job): boolean {
-    return !this.paused && !this.closing && !this.revoked.has(job.projectId) && !this.cancellations.has(job.id) && (!job.taskId || this.task(job.taskId).cancelledAt === undefined) && !!this.store.data.folders.find(folder => folder.id === job.projectId);
+    return this.privacyNoticeAccepted && !this.paused && !this.closing && !this.revoked.has(job.projectId) && !this.cancellations.has(job.id) && (!job.taskId || this.task(job.taskId).cancelledAt === undefined) && !!this.store.data.folders.find(folder => folder.id === job.projectId);
   }
   async addFolders(paths: string[]): Promise<void> {
+    this.requirePrivacyNotice();
     const folders: FolderScope[] = [];
     const privateRoot = await fs.realpath(this.dataDir).catch(() => path.resolve(this.dataDir));
     const home = await fs.realpath(os.homedir());
@@ -188,6 +204,7 @@ export class Workspace extends EventEmitter {
   async enableAutomatic(remember: boolean, expectedFolders: FolderScope[]): Promise<void> {
     const expected = JSON.stringify(expectedFolders);
     const check = (): void => {
+      this.requirePrivacyNotice();
       if (JSON.stringify(this.store.data.folders) !== expected || !this.store.data.folders.length) throw new Error('접근 폴더가 변경되었습니다. 자동승인을 다시 시작하세요.');
       if (this.paused || this.closing) throw new Error('연결을 재개한 뒤 자동승인을 시작하세요.');
     };
@@ -220,6 +237,7 @@ export class Workspace extends EventEmitter {
     } finally { for (const id of ids) this.revoked.delete(id); this.changed(); }
   }
   async setEnvironmentNames(raw: unknown): Promise<void> {
+    this.requirePrivacyNotice();
     const names = validateEnvironmentNames(raw), ids = this.store.data.folders.map(folder => folder.id);
     for (const id of ids) this.revoked.add(id);
     try {
@@ -249,6 +267,7 @@ export class Workspace extends EventEmitter {
     return this.jobSnapshot(receipt.id);
   }
   private async accept(input: Proposal): Promise<Job> {
+    this.requirePrivacyNotice();
     this.project(input.projectId);
     // Identity is the caller's request; a patch's derived content depends on the file and is excluded.
     const requestHash = fingerprint(input);
@@ -282,14 +301,6 @@ export class Workspace extends EventEmitter {
       const currentMode = this.project(input.projectId).approvalMode ?? 'review';
       const currentlyAutomatic = currentMode === 'automatic';
       job.approval = currentlyAutomatic ? 'automatic' : 'manual'; job.state = currentlyAutomatic ? 'queued' : 'pending';
-      if (d.receipts.length >= 10000) {
-        // Forget the oldest settled request older than a day. Listed jobs keep their receipts,
-        // so a restart never has to recreate one past the cap; recent retries stay idempotent.
-        const listed = new Set(d.jobs.map(j => j.id));
-        const index = d.receipts.findIndex(r => terminal(r.state) && r.updatedAt < now - 86400000 && !listed.has(r.id));
-        if (index < 0) throw new Error('최근 24시간의 중복 실행 방지 기록이 10,000개입니다. 잠시 후 다시 시도하세요.');
-        d.receipts.splice(index, 1);
-      }
       this.insertLog(d,job);
       d.receipts.push({ id: job.id, requestId: job.requestId, projectId: job.projectId, taskId:job.taskId, requestHash: job.requestHash, kind: job.kind, state: job.state, createdAt: now, updatedAt: now });
     });
@@ -304,13 +315,14 @@ export class Workspace extends EventEmitter {
     this.changed(); this.pump();
   }
   private pump(): void {
+    if (!this.privacyNoticeAccepted) return;
     if (this.paused || this.closing) return;
     for (const job of [...this.store.data.jobs].reverse()) {
       if (this.active.size >= 2) break;
       if (job.state !== 'queued' || this.active.has(job.id)) continue;
       // A command can touch every granted folder, so it owns all execution scopes.
       if (job.kind === 'command' && this.active.size) break;
-      if ([...this.active.keys()].some(id => this.job(id).kind === 'command') || [...this.activeProjects].some(id => overlaps(this.project(id).path,this.project(job.projectId).path))) continue;
+      if ([...this.active.keys()].some(id => { const active=this.store.data.jobs.find(job=>job.id===id); return !active || active.kind==='command'; }) || [...this.activeProjects].some(id => overlaps(this.project(id).path,this.project(job.projectId).path))) continue;
       this.activeProjects.add(job.projectId);
       const run = Promise.resolve().then(() => this.execute(job.id)).catch(() => {
         this.failClosed('작업 기록을 확정하지 못했습니다. 실제 파일·명령 결과를 확인하고 앱을 재시작하세요.');
