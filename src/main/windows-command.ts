@@ -22,6 +22,15 @@ export function windowsRunnerPath(): string {
 export function requireWindowsRunner(): void {
   if (process.platform !== 'win32' || !existsSync(windowsRunnerPath())) throw new Error('Windows 명령 격리 실행기가 없습니다. 최신 Windows용 WWG를 사용하세요.');
 }
+function launcherEnvironment(): NodeJS.ProcessEnv {
+  // Userenv needs these locations to create/delete an AppContainer profile.
+  // They belong to the trusted launcher only, never to the requested command.
+  const environment: NodeJS.ProcessEnv = { SystemRoot: process.env.SystemRoot || 'C:\\Windows' };
+  for (const name of ['WINDIR', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'TEMP', 'TMP']) {
+    if (process.env[name]) environment[name] = process.env[name];
+  }
+  return environment;
+}
 
 /** Read only the default stream of a checked ordinary file; CopyFile would copy NTFS ADS too. */
 async function digestFile(target: string, expected: BigIntStats, authorized: () => boolean, destination?: string, durable = false): Promise<string> {
@@ -171,7 +180,7 @@ export class WindowsCommandWorkspace {
   }
   spawn(cwd: string, command: string, selected: Record<string, string>): ChildProcess {
     requireWindowsRunner(); check(this.authorized);
-    const child = spawn(windowsRunnerPath(), [], { windowsHide: true, shell: false, env: { SystemRoot: process.env.SystemRoot || 'C:\\Windows' }, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(windowsRunnerPath(), [], { windowsHide: true, shell: false, env: launcherEnvironment(), stdio: ['pipe', 'pipe', 'pipe'] });
     child.stdin!.on('error', () => {}); // A rejected launcher may close stdin before the JSON arrives.
     child.stdin!.end(JSON.stringify({ profile: this.profile, stage: this.stage, cwd: this.mappedPath(cwd), command: this.mappedCommand(command), environment: this.environment(selected) }));
     return child;
@@ -240,7 +249,7 @@ export class WindowsCommandWorkspace {
   }
   async dispose(): Promise<void> {
     if (process.platform === 'win32' && existsSync(windowsRunnerPath())) await new Promise<void>(resolve => {
-      const child = spawn(windowsRunnerPath(), ['--cleanup', this.profile], { windowsHide: true, stdio: 'ignore', env: { SystemRoot: process.env.SystemRoot || 'C:\\Windows' } });
+      const child = spawn(windowsRunnerPath(), ['--cleanup', this.profile], { windowsHide: true, stdio: 'ignore', env: launcherEnvironment() });
       child.once('error', () => resolve()); child.once('close', () => resolve());
     });
     await fs.rm(this.stage, { recursive: true, force: true });

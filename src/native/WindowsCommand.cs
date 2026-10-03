@@ -12,6 +12,7 @@ using System.Security.Principal;
 using System.Web.Script.Serialization;
 
 internal static class WindowsCommand {
+    static string step = "read request";
     [StructLayout(LayoutKind.Sequential)] struct SidAttributes { public IntPtr Sid; public uint Attributes; }
     [StructLayout(LayoutKind.Sequential)] struct Capabilities { public IntPtr Sid, Values; public uint Count, Reserved; }
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct Startup {
@@ -105,8 +106,11 @@ internal static class WindowsCommand {
         var allocated = new List<IntPtr>(); var localSids = new List<IntPtr>();
         ProcessInfo process = new ProcessInfo(); bool resumed = false;
         try {
+            step = "create AppContainer profile";
             HResult(CreateAppContainerProfile(request.profile, "WWG command", "Isolated WWG command workspace", IntPtr.Zero, 0, out sid));
+            step = "grant filtered workspace";
             GrantWorkspace(stage, sid);
+            step = "derive runtime capabilities";
             var capabilitySids = new List<IntPtr>();
             foreach (string text in new [] { "S-1-15-3-1", "S-1-15-3-3" }) { IntPtr value; Check(ConvertStringSidToSid(text, out value)); localSids.Add(value); capabilitySids.Add(value); }
             HResult(DeriveCapabilitySidsFromName("registryRead", out registryGroups, out groupCount, out registrySids, out registryCount));
@@ -126,6 +130,7 @@ internal static class WindowsCommand {
             IntPtr handles = Marshal.AllocHGlobal(3 * IntPtr.Size); allocated.Add(handles);
             Marshal.WriteIntPtr(handles, input); Marshal.WriteIntPtr(handles, IntPtr.Size, output); Marshal.WriteIntPtr(handles, 2 * IntPtr.Size, errorOutput);
             IntPtr listSize = IntPtr.Zero; InitializeProcThreadAttributeList(IntPtr.Zero, 3, 0, ref listSize);
+            step = "configure LPAC attributes";
             attributes = Marshal.AllocHGlobal(listSize); Check(InitializeProcThreadAttributeList(attributes, 3, 0, ref listSize));
             Check(UpdateProcThreadAttribute(attributes, 0, new IntPtr(0x20009), caps, new IntPtr(Marshal.SizeOf(typeof(Capabilities))), IntPtr.Zero, IntPtr.Zero));
             Check(UpdateProcThreadAttribute(attributes, 0, new IntPtr(0x2000f), policy, new IntPtr(4), IntPtr.Zero, IntPtr.Zero));
@@ -139,20 +144,25 @@ internal static class WindowsCommand {
             var block = new StringBuilder(); foreach (var pair in environment) block.Append(pair.Key).Append('=').Append(pair.Value).Append('\0'); block.Append('\0');
             IntPtr environmentBlock = Marshal.StringToHGlobalUni(block.ToString()); allocated.Add(environmentBlock);
             string executable = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe");
+            step = "create suspended cmd";
             Check(CreateProcess(executable, new StringBuilder("\"" + executable + "\" /D /S /C \"" + request.command + "\""), IntPtr.Zero, IntPtr.Zero, true, 0x00080000 | 0x00000004 | 0x00000400 | 0x08000000, environmentBlock, cwd, ref startup, out process));
+            step = "contain process tree";
             job = CreateJobObject(IntPtr.Zero, null); if (job == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
             var limits = new ExtendedLimits { Basic = new BasicLimits { Flags = 0x2000 } };
             Check(SetInformationJobObject(job, 9, ref limits, Marshal.SizeOf(typeof(ExtendedLimits))));
             Check(AssignProcessToJobObject(job, process.Process));
+            step = "verify LPAC token";
             Check(OpenProcessToken(process.Process, 8, out token));
             int isContainer, isLpac, returned;
             Check(GetTokenInformation(token, 29, out isContainer, 4, out returned));
             Check(GetTokenInformation(token, 46, out isLpac, 4, out returned));
             if (isContainer != 1 || isLpac != 1) throw new IOException("Windows did not create the required LPAC sandbox.");
+            step = "execute command";
             if (ResumeThread(process.Thread) == uint.MaxValue) throw new Win32Exception(Marshal.GetLastWin32Error());
             resumed = true;
             if (WaitForSingleObject(process.Process, uint.MaxValue) != 0) throw new Win32Exception(Marshal.GetLastWin32Error());
             uint code; Check(GetExitCodeProcess(process.Process, out code));
+            step = "stop command descendants";
             // Wait for descendants to exit before Node inspects any output files.
             Check(TerminateJobObject(job, 0));
             Accounting accounting;
@@ -163,6 +173,7 @@ internal static class WindowsCommand {
                 System.Threading.Thread.Sleep(5);
             }
             CloseHandle(job); job = IntPtr.Zero;
+            step = "check result reparse points";
             OrdinaryTree(stage);
             return unchecked((int)code);
         } finally {
@@ -191,6 +202,6 @@ internal static class WindowsCommand {
             if (args.Length != 0) throw new ArgumentException("Unknown launcher option.");
             var json = new JavaScriptSerializer { MaxJsonLength = 131072 };
             return Run(json.Deserialize<Request>(Console.In.ReadToEnd()));
-        } catch (Exception error) { Console.Error.WriteLine("[WWG Windows sandbox] " + error.Message); return 125; }
+        } catch (Exception error) { Console.Error.WriteLine("[WWG Windows sandbox: " + step + "] " + error.Message); return 125; }
     }
 }
