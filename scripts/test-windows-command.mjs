@@ -207,7 +207,7 @@ if (process.platform === 'win32') {
   });
   await test('LPAC PowerShell can move and delete copied files and folders', async ({ source, prepare }) => {
     const workspace = await prepare();
-    const result = await execute(workspace, source, 'New-Item -ItemType Directory bulk | Out-Null; Move-Item safe.txt bulk\\moved.txt; Remove-Item bulk -Recurse -Force');
+    const result = await execute(workspace, source, 'try{New-Item -ItemType Directory bulk | Out-Null; Move-Item safe.txt bulk\\moved.txt; Remove-Item bulk -Recurse -Force}catch{Write-Output $_.Exception.ToString();throw}');
     assert.equal(result.code, 0, result.output);
     await workspace.synchronize();
     assert.equal(await exists(path.join(source, 'safe.txt')), false);
