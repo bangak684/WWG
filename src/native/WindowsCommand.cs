@@ -103,6 +103,14 @@ internal static class WindowsCommand {
     static string AtDrive(string value, string stage, string drive) {
         return value.Replace(stage, drive + "\\").Replace(drive + "\\\\", drive + "\\");
     }
+    static void UnmountWorkspace(string stage) {
+        string target = "\\??\\" + Path.GetFullPath(stage).TrimEnd(Path.DirectorySeparatorChar);
+        for (char letter = 'D'; letter <= 'Z'; letter++) {
+            string name = letter + ":"; var value = new StringBuilder(32768);
+            if (QueryDosDevice(name, value, value.Capacity) != 0 && value.ToString().Equals(target, StringComparison.OrdinalIgnoreCase))
+                Check(DefineDosDevice(1 | 2 | 4 | 8, name, target));
+        }
+    }
     static readonly object lifetimeLock = new object();
     static bool parentGone;
     static IntPtr lifetimeProcess, lifetimeJob;
@@ -285,6 +293,7 @@ internal static class WindowsCommand {
             Check(OpenProcessToken(process.Process, 10, out token));
             VerifyLpac(token, sid, request);
             step = "execute command";
+            Console.Out.WriteLine("\u001eWWGDRIVE:" + workspaceDrive + "\u001f"); Console.Out.Flush();
             if (ResumeThread(process.Thread) == uint.MaxValue) throw new Win32Exception(Marshal.GetLastWin32Error());
             resumed = true;
             if (WaitForSingleObject(process.Process, uint.MaxValue) != 0) throw new Win32Exception(Marshal.GetLastWin32Error());
@@ -314,7 +323,7 @@ internal static class WindowsCommand {
             if (attributes != IntPtr.Zero) { DeleteProcThreadAttributeList(attributes); Marshal.FreeHGlobal(attributes); }
             foreach (IntPtr memory in allocated) Marshal.FreeHGlobal(memory);
             foreach (IntPtr value in localSids) LocalFree(value);
-            if (workspaceDrive != null) DefineDosDevice(1 | 2 | 4 | 8, workspaceDrive, "\\??\\" + stage);
+            if (workspaceDrive != null) UnmountWorkspace(stage);
             if (sid != IntPtr.Zero) { FreeSid(sid); DeleteAppContainerProfile(request.profile); }
         }
     }
@@ -325,7 +334,7 @@ internal static class WindowsCommand {
             AppContext.SetSwitch("Switch.System.IO.BlockLongPaths", false);
             Console.InputEncoding = new UTF8Encoding(false);
             Console.OutputEncoding = new UTF8Encoding(false);
-            if (args.Length == 2 && args[0] == "--cleanup" && System.Text.RegularExpressions.Regex.IsMatch(args[1], "^WWG\\.Command\\.[a-f0-9-]{36}$")) { DeleteAppContainerProfile(args[1]); return 0; }
+            if (args.Length == 3 && args[0] == "--cleanup" && System.Text.RegularExpressions.Regex.IsMatch(args[1], "^WWG\\.Command\\.[a-f0-9-]{36}$")) { UnmountWorkspace(args[2]); DeleteAppContainerProfile(args[1]); return 0; }
             if (args.Length != 0) throw new ArgumentException("Unknown launcher option.");
             var json = new JavaScriptSerializer { MaxJsonLength = 32 * 1024 * 1024 };
             return Run(json.Deserialize<Request>(Console.In.ReadToEnd()));

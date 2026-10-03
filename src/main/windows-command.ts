@@ -110,6 +110,7 @@ export class WindowsCommandWorkspace {
   private mappings: Mapping[] = [];
   private runtimePaths: string[] = [];
   private preparedRuntimes = new Set<string>();
+  private outputDrive?: string;
   private published = 0;
   get hasPublishedChanges(): boolean { return this.published > 0; }
   private constructor(readonly stage: string, private authorized: () => boolean) {}
@@ -190,9 +191,14 @@ export class WindowsCommandWorkspace {
     return command;
   }
   displayOutput(output: string): string {
+    output = output.replace(/\x1eWWGDRIVE:([D-Z]:)\x1f\r?\n?/g, (_message, drive: string) => { this.outputDrive ??= drive; return ''; });
     for (const mapping of [...this.mappings].sort((a,b) => b.copy.length-a.copy.length)) {
       const source = mapping.copy.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       output = output.replace(new RegExp(source + '(?=[\\\\/"\'\\s&|<>)]|$)', 'gi'), () => mapping.original);
+      if (this.outputDrive) {
+        const mounted = path.win32.join(this.outputDrive + '\\', path.relative(this.stage, mapping.copy)).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        output = output.replace(new RegExp(mounted + '(?=[\\\\/"\'\\s&|<>)]|$)', 'gi'), () => mapping.original);
+      }
     }
     return output;
   }
@@ -279,7 +285,7 @@ export class WindowsCommandWorkspace {
   }
   async dispose(): Promise<void> {
     if (process.platform === 'win32' && existsSync(windowsRunnerPath())) await new Promise<void>(resolve => {
-      const child = spawn(windowsRunnerPath(), ['--cleanup', this.profile], { windowsHide: true, stdio: 'ignore', env: launcherEnvironment() });
+      const child = spawn(windowsRunnerPath(), ['--cleanup', this.profile, this.stage], { windowsHide: true, stdio: 'ignore', env: launcherEnvironment() });
       child.once('error', () => resolve()); child.once('close', () => resolve());
     });
     await fs.rm(this.stage, { recursive: true, force: true });
