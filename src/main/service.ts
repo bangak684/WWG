@@ -374,7 +374,7 @@ export class Workspace extends EventEmitter {
     this.lastCall = Date.now();
     if (!hasJob && !['wwg_status','job_get','logs_list'].includes(tool)) {
       const now = this.lastCall, id = randomUUID();
-      const job: Job = { id, requestId:id, projectId:'00000000-0000-4000-8000-000000000000', kind: ['files_list','file_read','files_read_batch'].includes(tool) ? 'read' : 'request', tool, label:label.slice(0,8000), state:ok?'done':'failed', output:output.slice(-MAX_OUTPUT), createdAt:now, updatedAt:now };
+      const job: Job = { id, requestId:id, projectId:'00000000-0000-4000-8000-000000000000', kind: ['projects_list','folders_list','files_list','file_read','files_read_batch'].includes(tool) ? 'read' : 'request', tool, label:label.slice(0,8000), state:ok?'done':'failed', output:output.slice(-MAX_OUTPUT), createdAt:now, updatedAt:now };
       this.store.updateLazy(d => {
         if (d.jobs.length >= 200) {
           const index = d.jobs.findLastIndex(job => terminal(job.state));
