@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "target": "ES2023", "module": "ESNext", "moduleResolution": "bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"], "strict": true,
+    "noUncheckedIndexedAccess": true, "esModuleInterop": true,
+    "skipLibCheck": true, "resolveJsonModule": true, "noEmit": true,
+    "types": ["node", "electron-vite/node", "vite/client"]
+  },
+  "include": ["src/**/*.ts", "electron.vite.config.ts"]
+}

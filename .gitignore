@@ -1,0 +1,13 @@
+node_modules/
+out/
+release/*/*
+!release/*/RELEASE.md
+.DS_Store
+*.log
+.env
+.env.*
+*.p12
+*.p8
+*.pfx
+*.key
+*.pem

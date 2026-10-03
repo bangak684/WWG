@@ -1,0 +1,43 @@
+name: Windows portable package
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+          cache: npm
+      - name: Read version
+        id: package
+        shell: pwsh
+        run: |
+          $packageVersion = node -p "require('./package.json').version"
+          "version=$packageVersion" >> $env:GITHUB_OUTPUT
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Install Electron binary
+        run: npm run setup:electron
+      - name: Package Windows x64 portable
+        run: npm run package:win
+      - name: Upload versioned release files
+        uses: actions/upload-artifact@v4
+        with:
+          name: WWG-${{ steps.package.outputs.version }}-windows-portable
+          path: |
+            release/${{ steps.package.outputs.version }}/*-x64-portable-preview.exe
+            release/${{ steps.package.outputs.version }}/*-x64-portable-preview.zip
+            release/${{ steps.package.outputs.version }}/SHA256SUMS.txt
+            release/${{ steps.package.outputs.version }}/release-manifest.json
+            release/${{ steps.package.outputs.version }}/RELEASE.md
+          if-no-files-found: error
