@@ -151,13 +151,15 @@ export class WindowsCommandWorkspace {
   /** Standard installations are copied, never granted access in place or inherited through PATH. */
   async prepareRuntimes(command: string): Promise<void> {
     const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
-    for (const name of ['nodejs', 'Git']) {
-      if (!(name === 'Git' ? /\bgit(?:\.exe)?\b/i : /\b(?:node|npm|npx)(?:\.exe|\.cmd)?\b/i).test(command)) continue;
-      const original = path.join(programFiles, name);
+    for (const name of ['PowerShell', 'nodejs', 'Git']) {
+      if (name !== 'PowerShell' && !(name === 'Git' ? /\bgit(?:\.exe)?\b/i : /\b(?:node|npm|npx)(?:\.exe|\.cmd)?\b/i).test(command)) continue;
+      const original = name === 'PowerShell' ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0') : path.join(programFiles, name);
       try { if (!(await fs.lstat(original)).isDirectory()) continue; }
       catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
       const copy = path.join(this.stage, 'runtime', name);
-      const { tree } = await inventory(original, this.authorized, [], false);
+      // Windows system components have legitimate WinSxS aliases. Read their
+      // default streams from the OS-owned runtime; user folder aliases stay checked.
+      const { tree } = await inventory(original, this.authorized, [], false, name === 'PowerShell');
       await fs.mkdir(copy, { recursive: true });
       for (const [relative, entry] of tree) {
         if (!relative) continue;
@@ -197,13 +199,14 @@ export class WindowsCommandWorkspace {
       USERPROFILE: path.join(this.stage, 'temp'), HOME: path.join(this.stage, 'temp'), APPDATA: path.join(this.stage, 'temp'), LOCALAPPDATA: path.join(this.stage, 'temp'),
       PATH: [...this.runtimePaths, path.join(system, 'System32'), path.join(system, 'System32', 'WindowsPowerShell', 'v1.0')].join(';'),
       TEMP: path.join(this.stage, 'temp'), TMP: path.join(this.stage, 'temp'), NO_COLOR: '1', TERM: 'dumb',
+      PSModulePath: path.join(this.stage, 'runtime', 'PowerShell', 'Modules'), PSModuleAnalysisCachePath: path.join(this.stage, 'temp', 'powershell-module-cache'),
       GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: 'NUL', PYTHONNOUSERSITE: '1', npm_config_userconfig: 'NUL', npm_config_cache: path.join(this.stage, 'temp', 'npm-cache') };
   }
   spawn(cwd: string, command: string, selected: Record<string, string>): ChildProcess {
     requireWindowsRunner(); check(this.authorized);
     const child = spawn(windowsRunnerPath(), [], { windowsHide: true, shell: false, env: launcherEnvironment(), stdio: ['pipe', 'pipe', 'pipe'] });
     child.stdin!.on('error', () => {}); // A rejected launcher may close stdin before the JSON arrives.
-    child.stdin!.end(JSON.stringify({ profile: this.profile, stage: this.stage, cwd: this.mappedPath(cwd), command: this.mappedCommand(command), environment: this.environment(selected), originalRoots: this.mappings.map(mapping => mapping.original), excludedPaths: this.mappings.flatMap(mapping => mapping.excluded) }));
+    child.stdin!.end(JSON.stringify({ profile: this.profile, stage: this.stage, cwd: this.mappedPath(cwd), command: this.mappedCommand(command), powershell: path.join(this.stage, 'runtime', 'PowerShell', 'powershell.exe'), environment: this.environment(selected), originalRoots: this.mappings.map(mapping => mapping.original), excludedPaths: this.mappings.flatMap(mapping => mapping.excluded) }));
     return child;
   }
 

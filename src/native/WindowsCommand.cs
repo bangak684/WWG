@@ -71,6 +71,7 @@ internal static class WindowsCommand {
         public string stage { get; set; }
         public string cwd { get; set; }
         public string command { get; set; }
+        public string powershell { get; set; }
         public Dictionary<string, string> environment { get; set; }
         public string[] originalRoots { get; set; }
         public string[] excludedPaths { get; set; }
@@ -208,8 +209,9 @@ internal static class WindowsCommand {
             }
             var block = new StringBuilder(); foreach (var pair in environment) block.Append(pair.Key).Append('=').Append(pair.Value).Append('\0'); block.Append('\0');
             IntPtr environmentBlock = Marshal.StringToHGlobalUni(block.ToString()); allocated.Add(environmentBlock);
-            string executable = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
-            string script = "$ErrorActionPreference='Stop';[Console]::OutputEncoding=New-Object Text.UTF8Encoding $false;$OutputEncoding=[Console]::OutputEncoding;& {\n" + request.command + "\n};if(!$?){exit 1};if($null -ne $LASTEXITCODE){exit $LASTEXITCODE}";
+            string executable = Path.GetFullPath(request.powershell);
+            if (!Within(executable, stage) || !File.Exists(executable)) throw new IOException("Filtered PowerShell runtime is missing.");
+            string script = "$ErrorActionPreference='Stop';[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$OutputEncoding=[Console]::OutputEncoding;& {\n" + request.command + "\n};if(!$?){exit 1};if($null -ne $LASTEXITCODE){exit $LASTEXITCODE}";
             string encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
             step = "create suspended PowerShell";
             Check(CreateProcess(executable, new StringBuilder("\"" + executable + "\" -NoLogo -NoProfile -NonInteractive -OutputFormat Text -EncodedCommand " + encoded), IntPtr.Zero, IntPtr.Zero, true, 0x00080000 | 0x00000004 | 0x00000400 | 0x08000000, environmentBlock, cwd, ref startup, out process));
