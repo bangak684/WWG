@@ -6,13 +6,13 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { buildWindowsRunner } from './build-windows-runner.mjs';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const bundle = path.join(root, 'out', 'main', 'windows-command-test.cjs');
 await build({ entryPoints: [path.join(root, 'src', 'main', 'windows-command.ts')], outfile: bundle, bundle: true, platform: 'node', format: 'cjs', external: ['original-fs'] });
-const { WindowsCommandWorkspace } = createRequire(import.meta.url)(bundle);
+const { WindowsCommandWorkspace, windowsRunnerPath } = createRequire(import.meta.url)(bundle);
 if (process.platform === 'win32') await buildWindowsRunner();
 let passed = 0;
 const failures = [];
@@ -256,6 +256,52 @@ if (process.platform === 'win32') {
     assert.equal(result.code, 0, result.output);
     await new Promise(resolve => setTimeout(resolve, 3000));
     assert.equal(await exists(workspace.mappedPath(path.join(source, 'orphan.txt'))), false);
+  });
+  await test('forced parent exit stops its command and releases the temporary drive', async ({ source, data }) => {
+    const script = path.join(data, 'parent.cjs');
+    await fs.writeFile(script, `const { WindowsCommandWorkspace } = require(${JSON.stringify(bundle)});
+(async () => {
+  const workspace = await WindowsCommandWorkspace.prepare([${JSON.stringify(source)}], ${JSON.stringify(data)}, () => true, [${JSON.stringify(data)}]);
+  await workspace.prepareRuntimes('Write-Output RUNNING');
+  const child = workspace.spawn(${JSON.stringify(source)}, "Write-Output RUNNING; Start-Sleep -Seconds 30; [IO.File]::WriteAllText('orphan.txt','BAD')", {});
+  let output = '', sent = false;
+  child.stdout.on('data', bytes => {
+    output += bytes;
+    if (!sent && output.includes('RUNNING')) {
+      sent = true;
+      process.send({ pid: child.pid, profile: workspace.profile, stage: workspace.stage, drive: output.match(/WWGDRIVE:([D-Z]:)/)[1] });
+    }
+  });
+  child.stderr.pipe(process.stderr);
+})().catch(error => { console.error(error); process.exit(1); });
+`);
+    const parent = spawn(process.execPath, [script], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+    let output = '', info;
+    parent.stdout.on('data', bytes => output += bytes); parent.stderr.on('data', bytes => output += bytes);
+    try {
+      info = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('Nested command did not start: ' + output)), 30000);
+        parent.once('message', value => { clearTimeout(timer); resolve(value); });
+        parent.once('error', error => { clearTimeout(timer); reject(error); });
+        parent.once('exit', () => { clearTimeout(timer); reject(new Error('Parent exited before readiness: ' + output)); });
+      });
+      const exited = new Promise(resolve => parent.once('exit', resolve)); parent.kill(); await exited;
+      const deadline = Date.now() + 10000;
+      while (true) {
+        try { process.kill(info.pid, 0); }
+        catch (error) { if (error.code === 'ESRCH') break; throw error; }
+        if (Date.now() >= deadline) throw new Error('The launcher survived its parent.');
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      assert.equal(await exists(info.drive + '\\'), false);
+      assert.equal(await exists(path.join(info.stage, 'folders', '0', 'orphan.txt')), false);
+    } finally {
+      parent.kill();
+      if (info) {
+        try { process.kill(info.pid); } catch {}
+        await promisify(execFile)(windowsRunnerPath(), ['--cleanup', info.profile, info.stage]);
+      }
+    }
   });
 } else console.log('Windows native LPAC tests run on Windows CI.');
 await fs.rm(bundle, { force: true });
