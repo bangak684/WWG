@@ -201,6 +201,7 @@ export class WindowsCommandWorkspace {
     return { ...selected, SystemRoot: system, WINDIR: system, SystemDrive: path.parse(system).root.replace(/[\\/]$/, ''), ComSpec: path.join(system, 'System32', 'cmd.exe'),
       USERPROFILE: path.join(this.stage, 'temp'), HOME: path.join(this.stage, 'temp'), APPDATA: path.join(this.stage, 'temp'), LOCALAPPDATA: path.join(this.stage, 'temp'),
       PATH: [...this.runtimePaths, path.join(system, 'System32'), path.join(system, 'System32', 'WindowsPowerShell', 'v1.0')].join(';'),
+      PATHEXT: '.COM;.EXE;.BAT;.CMD',
       TEMP: path.join(this.stage, 'temp'), TMP: path.join(this.stage, 'temp'), NO_COLOR: '1', TERM: 'dumb',
       PSModulePath: path.join(this.stage, 'runtime', 'PowerShell', 'Modules'), PSModuleAnalysisCachePath: path.join(this.stage, 'temp', 'powershell-module-cache'),
       GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: 'NUL', PYTHONNOUSERSITE: '1', npm_config_userconfig: 'NUL', npm_config_cache: path.join(this.stage, 'temp', 'npm-cache') };

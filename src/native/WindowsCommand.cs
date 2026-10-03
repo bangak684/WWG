@@ -88,6 +88,15 @@ internal static class WindowsCommand {
         string full = Path.GetFullPath(value);
         return full.StartsWith("\\\\", StringComparison.Ordinal) ? "\\\\?\\UNC\\" + full.Substring(2) : "\\\\?\\" + full;
     }
+    static string QuoteArgument(string value) {
+        var result = new StringBuilder("\""); int slashes = 0;
+        foreach (char c in value) {
+            if (c == '\\') { slashes++; continue; }
+            result.Append('\\', c == '"' ? slashes * 2 + 1 : slashes);
+            result.Append(c); slashes = 0;
+        }
+        return result.Append('\\', slashes * 2).Append('"').ToString();
+    }
     static void OrdinaryTree(string root) {
         if ((File.GetAttributes(root) & FileAttributes.ReparsePoint) != 0) throw new IOException("Workspace contains a reparse point.");
         foreach (string entry in Directory.EnumerateFileSystemEntries(root)) {
@@ -222,14 +231,15 @@ internal static class WindowsCommand {
                 if (pair.Key.IndexOfAny(new [] { '=', '\0' }) >= 0 || pair.Value.IndexOf('\0') >= 0) throw new ArgumentException("Invalid environment.");
                 environment.Add(pair.Key, pair.Value);
             }
+            string drive = Path.GetPathRoot(cwd);
+            if (drive.Length >= 2 && drive[1] == ':') environment["=" + drive.Substring(0, 2)] = cwd;
             var block = new StringBuilder(); foreach (var pair in environment) block.Append(pair.Key).Append('=').Append(pair.Value).Append('\0'); block.Append('\0');
             IntPtr environmentBlock = Marshal.StringToHGlobalUni(block.ToString()); allocated.Add(environmentBlock);
             string executable = Path.GetFullPath(request.powershell);
             if (!Within(executable, stage) || !File.Exists(executable)) throw new IOException("Filtered PowerShell runtime is missing.");
-            string script = "$ErrorActionPreference='Stop';[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$OutputEncoding=[Console]::OutputEncoding;& {\n" + request.command + "\n};if(!$?){exit 1};if($null -ne $LASTEXITCODE){exit $LASTEXITCODE}";
-            string encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
+            string script = "$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$OutputEncoding=[Console]::OutputEncoding;Set-Location -LiteralPath '" + cwd.Replace("'", "''") + "';& {\n" + request.command + "\n};if(!$?){exit 1};if($null -ne $LASTEXITCODE){exit $LASTEXITCODE}";
             step = "create suspended PowerShell";
-            Check(CreateProcess(executable, new StringBuilder("\"" + executable + "\" -NoLogo -NoProfile -NonInteractive -OutputFormat Text -EncodedCommand " + encoded), IntPtr.Zero, IntPtr.Zero, true, 0x00080000 | 0x00000004 | 0x00000400 | 0x08000000, environmentBlock, cwd, ref startup, out process));
+            Check(CreateProcess(executable, new StringBuilder(QuoteArgument(executable) + " -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -InputFormat Text -OutputFormat Text -Command " + QuoteArgument(script)), IntPtr.Zero, IntPtr.Zero, true, 0x00080000 | 0x00000004 | 0x00000400 | 0x08000000, environmentBlock, cwd, ref startup, out process));
             step = "contain process tree";
             job = CreateJobObject(IntPtr.Zero, null); if (job == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
             var limits = new ExtendedLimits { Basic = new BasicLimits { Flags = 0x2000 } };
