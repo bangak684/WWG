@@ -214,7 +214,10 @@ export class WindowsCommandWorkspace {
   }
   spawn(cwd: string, command: string, selected: Record<string, string>): ChildProcess {
     requireWindowsRunner(); check(this.authorized);
-    const child = spawn(windowsRunnerPath(), [], { windowsHide: true, shell: false, env: launcherEnvironment(), stdio: ['pipe', 'pipe', 'pipe'] });
+    // libuv otherwise kills the launcher immediately when WWG is terminated,
+    // bypassing its finally block. The launcher watches WWG's lifetime itself;
+    // its separate kill-on-close job still contains the command and descendants.
+    const child = spawn(windowsRunnerPath(), [], { windowsHide: true, detached: true, shell: false, env: launcherEnvironment(), stdio: ['pipe', 'pipe', 'pipe'] });
     child.stdin!.on('error', () => {}); // A rejected launcher may close stdin before the JSON arrives.
     child.stdin!.end(JSON.stringify({ profile: this.profile, stage: this.stage, cwd: this.mappedPath(cwd), command: this.mappedCommand(command), powershell: path.join(this.stage, 'runtime', 'PowerShell', 'powershell.exe'), parentPid: process.pid, environment: this.environment(selected), originalRoots: this.mappings.map(mapping => mapping.original), excludedPaths: this.mappings.flatMap(mapping => mapping.excluded) }));
     return child;
