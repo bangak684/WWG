@@ -57,6 +57,8 @@ internal static class WindowsCommand {
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
     [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int type);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetHandleInformation(IntPtr handle, uint mask, uint flags);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool DefineDosDevice(uint flags, string name, string target);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern uint QueryDosDevice(string name, StringBuilder target, int length);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr CreateFile(string name, uint access, uint sharing, ref SecurityAttributes security, uint disposition, uint flags, IntPtr template);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool DuplicateToken(IntPtr token, int level, out IntPtr duplicate);
@@ -83,6 +85,27 @@ internal static class WindowsCommand {
     static bool Within(string child, string parent) {
         return child.Equals(parent, StringComparison.OrdinalIgnoreCase) || child.StartsWith(parent + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }
+    static string MountWorkspace(string stage) {
+        using (var mutex = new System.Threading.Mutex(false, "Local\\WWG.Command.WorkspaceDrives")) {
+            try { mutex.WaitOne(); } catch (System.Threading.AbandonedMutexException) {}
+            try {
+                for (char letter = 'Z'; letter >= 'D'; letter--) {
+                    string name = letter + ":";
+                    if (QueryDosDevice(name, new StringBuilder(32768), 32768) != 0) continue;
+                    if (Marshal.GetLastWin32Error() != 2) continue;
+                    Check(DefineDosDevice(1 | 8, name, "\\??\\" + stage));
+                    return name;
+                }
+                throw new IOException("No temporary workspace drive is available.");
+            } finally { mutex.ReleaseMutex(); }
+        }
+    }
+    static string AtDrive(string value, string stage, string drive) {
+        return value.Replace(stage, drive + "\\").Replace(drive + "\\\\", drive + "\\");
+    }
+    static readonly object lifetimeLock = new object();
+    static bool parentGone;
+    static IntPtr lifetimeProcess, lifetimeJob;
     static string Extended(string value) {
         if (value.StartsWith("\\\\?\\", StringComparison.Ordinal)) return value;
         string full = Path.GetFullPath(value);
@@ -187,16 +210,27 @@ internal static class WindowsCommand {
         if (parent == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
         // If WWG is terminated forcibly, closing this launcher also closes its job.
         // The OS releases this one lifetime handle when the launcher exits.
-        var watch = new System.Threading.Thread(delegate() { if (WaitForSingleObject(parent, uint.MaxValue) == 0) Environment.Exit(125); });
+        var watch = new System.Threading.Thread(delegate() {
+            if (WaitForSingleObject(parent, uint.MaxValue) == 0) lock (lifetimeLock) {
+                parentGone = true;
+                if (lifetimeJob != IntPtr.Zero) TerminateJobObject(lifetimeJob, 125);
+                if (lifetimeProcess != IntPtr.Zero) TerminateProcess(lifetimeProcess, 125);
+            }
+        });
         watch.IsBackground = true; watch.Start();
         IntPtr sid = IntPtr.Zero, attributes = IntPtr.Zero, job = IntPtr.Zero, token = IntPtr.Zero;
         var allocated = new List<IntPtr>(); var localSids = new List<IntPtr>();
-        ProcessInfo process = new ProcessInfo(); bool resumed = false;
+        ProcessInfo process = new ProcessInfo(); bool resumed = false; string workspaceDrive = null;
         try {
             step = "create AppContainer profile";
             HResult(CreateAppContainerProfile(request.profile, "WWG command", "Isolated WWG command workspace", IntPtr.Zero, 0, out sid));
             step = "grant filtered workspace";
             GrantWorkspace(stage, sid);
+            step = "mount filtered workspace";
+            // A per-logon DOS drive points only to the filtered copy. PowerShell's
+            // built-in commands can normalize paths without traversing private parents.
+            workspaceDrive = MountWorkspace(stage);
+            string shellCwd = AtDrive(cwd, stage, workspaceDrive);
             step = "derive runtime capabilities";
             var capabilitySids = new List<IntPtr>();
             foreach (string text in new [] { "S-1-15-3-1", "S-1-15-3-3" }) { IntPtr value; Check(ConvertStringSidToSid(text, out value)); localSids.Add(value); capabilitySids.Add(value); }
@@ -229,26 +263,24 @@ internal static class WindowsCommand {
             var environment = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (request.environment != null) foreach (var pair in request.environment) {
                 if (pair.Key.IndexOfAny(new [] { '=', '\0' }) >= 0 || pair.Value.IndexOf('\0') >= 0) throw new ArgumentException("Invalid environment.");
-                environment.Add(pair.Key, pair.Value);
+                environment.Add(pair.Key, AtDrive(pair.Value, stage, workspaceDrive));
             }
-            string drive = Path.GetPathRoot(cwd);
-            if (drive.Length >= 2 && drive[1] == ':') environment["=" + drive.Substring(0, 2)] = cwd;
+            environment["=" + workspaceDrive] = shellCwd;
             var block = new StringBuilder(); foreach (var pair in environment) block.Append(pair.Key).Append('=').Append(pair.Value).Append('\0'); block.Append('\0');
             IntPtr environmentBlock = Marshal.StringToHGlobalUni(block.ToString()); allocated.Add(environmentBlock);
             string executable = Path.GetFullPath(request.powershell);
             if (!Within(executable, stage) || !File.Exists(executable)) throw new IOException("Filtered PowerShell runtime is missing.");
-            // FileSystemProvider normalizes through each ancestor when navigating a
-            // physical drive. Those ancestors deliberately remain inaccessible.
-            // A session-only drive rooted at the granted copy avoids that traversal.
-            string shellLocation = "WWG:\\" + cwd.Substring(stage.Length).TrimStart(Path.DirectorySeparatorChar);
-            string script = "$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$OutputEncoding=[Console]::OutputEncoding;New-PSDrive -Name WWG -PSProvider FileSystem -Root '" + stage.Replace("'", "''") + "' -Scope Global | Out-Null;Set-Location -LiteralPath '" + shellLocation.Replace("'", "''") + "';& {\n" + request.command + "\n};if(!$?){exit 1};if($null -ne $LASTEXITCODE){exit $LASTEXITCODE}";
+            executable = AtDrive(executable, stage, workspaceDrive);
+            string script = "$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$OutputEncoding=[Console]::OutputEncoding;Set-Location -LiteralPath '" + shellCwd.Replace("'", "''") + "';& {\n" + AtDrive(request.command, stage, workspaceDrive) + "\n};if(!$?){exit 1};if($null -ne $LASTEXITCODE){exit $LASTEXITCODE}";
             step = "create suspended PowerShell";
-            Check(CreateProcess(executable, new StringBuilder(QuoteArgument(executable) + " -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -InputFormat Text -OutputFormat Text -Command " + QuoteArgument(script)), IntPtr.Zero, IntPtr.Zero, true, 0x00080000 | 0x00000004 | 0x00000400 | 0x08000000, environmentBlock, cwd, ref startup, out process));
+            Check(CreateProcess(executable, new StringBuilder(QuoteArgument(executable) + " -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -InputFormat Text -OutputFormat Text -Command " + QuoteArgument(script)), IntPtr.Zero, IntPtr.Zero, true, 0x00080000 | 0x00000004 | 0x00000400 | 0x08000000, environmentBlock, shellCwd, ref startup, out process));
+            lock (lifetimeLock) { lifetimeProcess = process.Process; if (parentGone) throw new IOException("WWG closed before execution."); }
             step = "contain process tree";
             job = CreateJobObject(IntPtr.Zero, null); if (job == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
             var limits = new ExtendedLimits { Basic = new BasicLimits { Flags = 0x2000 } };
             Check(SetInformationJobObject(job, 9, ref limits, Marshal.SizeOf(typeof(ExtendedLimits))));
             Check(AssignProcessToJobObject(job, process.Process));
+            lock (lifetimeLock) { lifetimeJob = job; if (parentGone) throw new IOException("WWG closed before execution."); }
             step = "verify LPAC token";
             Check(OpenProcessToken(process.Process, 10, out token));
             VerifyLpac(token, sid, request);
@@ -267,11 +299,12 @@ internal static class WindowsCommand {
                 if (attempt == 2000) throw new IOException("Windows command descendants did not stop.");
                 System.Threading.Thread.Sleep(5);
             }
-            CloseHandle(job); job = IntPtr.Zero;
+            lock (lifetimeLock) { lifetimeJob = IntPtr.Zero; CloseHandle(job); job = IntPtr.Zero; }
             step = "check result reparse points";
             OrdinaryTree(Extended(stage));
             return unchecked((int)code);
         } finally {
+            lock (lifetimeLock) { lifetimeJob = IntPtr.Zero; lifetimeProcess = IntPtr.Zero; }
             if (!resumed && process.Process != IntPtr.Zero) TerminateProcess(process.Process, 125);
             if (job != IntPtr.Zero) CloseHandle(job);
             if (token != IntPtr.Zero) CloseHandle(token);
@@ -281,6 +314,7 @@ internal static class WindowsCommand {
             if (attributes != IntPtr.Zero) { DeleteProcThreadAttributeList(attributes); Marshal.FreeHGlobal(attributes); }
             foreach (IntPtr memory in allocated) Marshal.FreeHGlobal(memory);
             foreach (IntPtr value in localSids) LocalFree(value);
+            if (workspaceDrive != null) DefineDosDevice(1 | 2 | 4 | 8, workspaceDrive, "\\??\\" + stage);
             if (sid != IntPtr.Zero) { FreeSid(sid); DeleteAppContainerProfile(request.profile); }
         }
     }
