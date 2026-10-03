@@ -70,7 +70,8 @@ require('./index.js');
     const env={...process.env,WORKROOM_ISOLATED_TEST:'1',WORKROOM_DATA_DIR:data,WORKROOM_PORT:'0',WWG_NOTICE_TEST_STAGE:stage,WWG_NOTICE_TEST_IMAGES:base};
     delete env.ELECTRON_RUN_AS_NODE;delete env.ELECTRON_RENDERER_URL;
     let output='';
-    child=spawn(createRequire(import.meta.url)('electron'),[harness],{cwd:root,env,windowsHide:true,stdio:['ignore','pipe','pipe']});
+    // Run the GUI normally: windowsHide also suppresses its first Windows window.
+    child=spawn(createRequire(import.meta.url)('electron'),[harness],{cwd:root,env,windowsHide:false,stdio:['ignore','pipe','pipe']});
     child.stdout.on('data',chunk=>{output+=chunk;});child.stderr.on('data',chunk=>{output+=chunk;});
     const watchdog=setTimeout(()=>child.kill(),20000);
     const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',resolve);}).finally(()=>clearTimeout(watchdog));
