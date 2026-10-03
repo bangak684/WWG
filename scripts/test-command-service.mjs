@@ -52,17 +52,22 @@ try {
   assert.ok(!job.output.includes('NEVER_RETURN_THIS_PRIVATE_VALUE'));
   console.log('PASS original .env cannot be read by shell');
 
-  job = await propose(windows ? 'Write-Output RUNNING; Start-Sleep -Seconds 30' : 'printf RUNNING; sleep 30');
+  job = await propose(windows ? 'Write-Output ("RUNNING:"+$env:TEMP); Start-Sleep -Seconds 30' : 'printf RUNNING; sleep 30');
   const started = Date.now();
   while (!workspace.jobSnapshot(job.id).output.includes('RUNNING')) {
     if (!['queued', 'running'].includes(workspace.job(job.id).state)) throw new Error(workspace.job(job.id).output);
     if (Date.now() - started > 15000) throw new Error('Command did not start.');
     await new Promise(resolve => setTimeout(resolve, 20));
   }
+  const temporaryDrive = windows ? workspace.jobSnapshot(job.id).output.match(/RUNNING:([D-Z]:)\\temp/)?.[1] : undefined;
+  if (windows) assert.ok(temporaryDrive, workspace.jobSnapshot(job.id).output);
   const shutdownStarted = Date.now(); await workspace.shutdown();
   assert.equal(workspace.job(job.id).state, 'cancelled');
   assert.ok(Date.now() - shutdownStarted < 10000);
-  if (windows) assert.deepEqual(await fs.readdir(path.join(data, 'command-workspaces')), []);
+  if (windows) {
+    assert.deepEqual(await fs.readdir(path.join(data, 'command-workspaces')), []);
+    await assert.rejects(fs.stat(temporaryDrive + '\\'), { code: 'ENOENT' });
+  }
   console.log('PASS shutdown cancels running commands and removes staged workspaces');
 } finally {
   await workspace.shutdown(); await fs.rm(base, { recursive: true, force: true }); await fs.rm(bundle, { force: true });
