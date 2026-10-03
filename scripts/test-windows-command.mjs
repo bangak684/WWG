@@ -241,6 +241,12 @@ if (process.platform === 'win32') {
     await workspace.synchronize();
     assert.equal(await fs.readFile(path.join(source, 'node.txt'), 'utf8'), 'node-ok');
   });
+  await test('isolated commands can make outbound HTTPS requests', async ({ source, prepare }) => {
+    const workspace = await prepare();
+    const result = await execute(workspace, source, `node -e "fetch('https://www.microsoft.com/robots.txt',{signal:AbortSignal.timeout(15000)}).then(r=>{console.log('HTTPS_OK:'+r.status);process.exit(0)}).catch(e=>{console.error(e);process.exit(2)})"`);
+    assert.equal(result.code, 0, result.output);
+    assert.match(result.output, /HTTPS_OK:[1-5][0-9]{2}/);
+  });
   await test('native descendants cannot regain ALL_APPLICATION_PACKAGES access', async ({ source, outside, prepare }) => {
     const privateFile = path.join(outside, 'private.txt');
     await fs.writeFile(privateFile, 'PRIVATE_ALL_PACKAGES_SENTINEL');
