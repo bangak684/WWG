@@ -45,7 +45,9 @@ macOS에서는 창을 닫아도 메뉴 막대에서 연결을 유지합니다. *
 
 맞춤형 MCP 서버 생성 화면은 터널 연결 전에도 열 수 있으며, 생성 완료와 사용에는 연결된 터널이 필요합니다. 연결 과정은 [공식 MCP 연결 안내](https://developers.openai.com/plugins/deploy/connect-chatgpt)와 [Secure MCP Tunnel 안내](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)를 참고하세요.
 
-파일은 전체 경로로 요청하고, 명령은 실행할 폴더의 전체 경로를 지정하세요. WWG로 작업하는 동안에는 앱과 터널 연결을 유지하세요. API 키는 저장하지 않으므로 앱을 다시 실행할 때 다시 입력해야 합니다.
+**API 키는 WWG를 실행할 때마다 다시 입력해야 합니다.** WWG는 API 키를 저장하지 않습니다. 앱을 다시 실행한 뒤 **ChatGPT 연결**에서 API 키를 입력하고 **터널 연결**을 누르세요.
+
+파일은 전체 경로로 요청하고, 명령은 실행할 폴더의 전체 경로를 지정하세요. WWG로 작업하는 동안에는 앱과 터널 연결을 유지하세요.
 
 ### 4. 승인과 실행 로그
 
@@ -58,24 +60,3 @@ macOS에서는 창을 닫아도 메뉴 막대에서 연결을 유지합니다. *
 ### OS 환경변수
 
 **접근 설정 → OS 환경변수**에 `API_TOKEN, DATABASE_URL`처럼 허용할 이름만 저장합니다. ChatGPT에는 필요한 변수 이름을 사용해 달라고 요청하세요. 값은 WWG를 실행한 OS 환경에서 가져오며 `.env` 파일은 불러오지 않습니다. 요청한 허용 변수만 명령에 전달하고 값은 실행 출력에서 숨깁니다.
-
-### 소스 실행
-
-Node.js 22.12 이상이 필요합니다.
-
-```sh
-npm ci
-npm run build
-npm start
-```
-
-Electron 설치가 생략됐다면 `npm run setup:electron`을 실행하세요. 개발 중에는 `npm run dev`를 사용합니다.
-
-### 릴리즈 만들기
-
-`npm run release:prepare`로 `release/<버전>/RELEASE.md`를 만들고 기능과 사용방법을 작성합니다. 기존 설명은 다시 실행해도 유지됩니다.
-
-- macOS Apple Silicon: `npm run package:mac`
-- Windows x64 무설치형 EXE·ZIP: Windows에서 `npm run package:win`
-
-배포 파일과 체크섬은 같은 버전 폴더에 생성됩니다. 버전별 설명만 Git으로 관리하고 배포 파일은 릴리즈에 첨부하세요.
