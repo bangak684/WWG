@@ -109,6 +109,7 @@ export class WindowsCommandWorkspace {
   readonly profile = `WWG.Command.${randomUUID()}`;
   private mappings: Mapping[] = [];
   private runtimePaths: string[] = [];
+  private preparedRuntimes = new Set<string>();
   private published = 0;
   get hasPublishedChanges(): boolean { return this.published > 0; }
   private constructor(readonly stage: string, private authorized: () => boolean) {}
@@ -152,6 +153,7 @@ export class WindowsCommandWorkspace {
   async prepareRuntimes(command: string): Promise<void> {
     const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
     for (const name of ['PowerShell', 'nodejs', 'Git']) {
+      if (this.preparedRuntimes.has(name)) continue;
       if (name !== 'PowerShell' && !(name === 'Git' ? /\bgit(?:\.exe)?\b/i : /\b(?:node|npm|npx)(?:\.exe|\.cmd)?\b/i).test(command)) continue;
       const original = name === 'PowerShell' ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0') : path.join(programFiles, name);
       try { if (!(await fs.lstat(original)).isDirectory()) continue; }
@@ -167,6 +169,7 @@ export class WindowsCommandWorkspace {
         else await digestFile(path.join(original, relative), entry.stat, this.authorized, path.join(copy, relative));
       }
       this.runtimePaths.push(...(name === 'Git' ? [path.join(copy, 'cmd'), path.join(copy, 'bin'), path.join(copy, 'usr', 'bin')] : [copy]));
+      this.preparedRuntimes.add(name);
     }
   }
 

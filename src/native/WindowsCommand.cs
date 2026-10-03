@@ -81,6 +81,11 @@ internal static class WindowsCommand {
     static bool Within(string child, string parent) {
         return child.Equals(parent, StringComparison.OrdinalIgnoreCase) || child.StartsWith(parent + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }
+    static string Extended(string value) {
+        if (value.StartsWith("\\\\?\\", StringComparison.Ordinal)) return value;
+        string full = Path.GetFullPath(value);
+        return full.StartsWith("\\\\", StringComparison.Ordinal) ? "\\\\?\\UNC\\" + full.Substring(2) : "\\\\?\\" + full;
+    }
     static void OrdinaryTree(string root) {
         if ((File.GetAttributes(root) & FileAttributes.ReparsePoint) != 0) throw new IOException("Workspace contains a reparse point.");
         foreach (string entry in Directory.EnumerateFileSystemEntries(root)) {
@@ -90,6 +95,7 @@ internal static class WindowsCommand {
         }
     }
     static void GrantWorkspace(string stage, IntPtr sid) {
+        stage = Extended(stage);
         OrdinaryTree(stage);
         var identity = new SecurityIdentifier(sid);
         GrantEntry(stage, identity, true);
@@ -136,6 +142,7 @@ internal static class WindowsCommand {
         } finally { if (descriptor != IntPtr.Zero) LocalFree(descriptor); Marshal.FreeHGlobal(privileges); }
     }
     static bool ProbePathRead(IntPtr token, string path) {
+        path = Extended(path);
         byte[] bytes = (File.GetAttributes(path) & FileAttributes.Directory) != 0 ? Directory.GetAccessControl(path).GetSecurityDescriptorBinaryForm() : File.GetAccessControl(path).GetSecurityDescriptorBinaryForm();
         IntPtr descriptor = Marshal.AllocHGlobal(bytes.Length), privileges = Marshal.AllocHGlobal(1024);
         try {
@@ -240,7 +247,7 @@ internal static class WindowsCommand {
             }
             CloseHandle(job); job = IntPtr.Zero;
             step = "check result reparse points";
-            OrdinaryTree(stage);
+            OrdinaryTree(Extended(stage));
             return unchecked((int)code);
         } finally {
             if (!resumed && process.Process != IntPtr.Zero) TerminateProcess(process.Process, 125);
@@ -258,6 +265,8 @@ internal static class WindowsCommand {
     static IntPtr localInput;
     public static int Main(string[] args) {
         try {
+            AppContext.SetSwitch("Switch.System.IO.UseLegacyPathHandling", false);
+            AppContext.SetSwitch("Switch.System.IO.BlockLongPaths", false);
             Console.InputEncoding = new UTF8Encoding(false);
             Console.OutputEncoding = new UTF8Encoding(false);
             if (args.Length == 2 && args[0] == "--cleanup" && System.Text.RegularExpressions.Regex.IsMatch(args[1], "^WWG\\.Command\\.[a-f0-9-]{36}$")) { DeleteAppContainerProfile(args[1]); return 0; }
