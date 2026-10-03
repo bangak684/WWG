@@ -1,8 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { WorkroomAPI, NavigationTarget } from '../shared';
 const api: WorkroomAPI = {
-  acceptPrivacyNotice: version => ipcRenderer.invoke('privacy:accept',version),
-  quit: () => ipcRenderer.invoke('app:quit'),
   snapshot: () => ipcRenderer.invoke('snapshot'),
   selectFolders: () => ipcRenderer.invoke('folder:select'),
   removeFolder: id => ipcRenderer.invoke('folder:remove',id),

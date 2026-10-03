@@ -1,12 +1,11 @@
 import './style.css';
 import { VISIBLE_LOG_LIMIT, STORED_LOG_LIMIT, type Snapshot, type Job, type TaskSnapshot, type TaskState, type TunnelStatus, type ConnectionLink, type NavigationTarget } from '../shared';
-import { PRIVACY_NOTICE_VERSION, PRIVACY_NOTICE_TITLE, PRIVACY_NOTICE_SECTIONS } from '../privacy-notice';
+import { PRIVACY_NOTICE_TITLE, PRIVACY_NOTICE_SECTIONS } from '../privacy-notice';
 const api = window.workroom, root = document.querySelector<HTMLDivElement>('#app')!;
 let data: Snapshot;
 let tunnel: TunnelStatus = {installed:false,phase:'stopped',tunnelId:'',message:''};
 let tab: NavigationTarget['tab'] = 'logs';
 let initialized = false, tunnelBusy = false, onlyPending = false, limit = 40;
-let privacyBusy = false;
 let toastTimer: ReturnType<typeof setTimeout>;
 const details = new Set<string>();
 const collapsedTasks = new Set<string>();
@@ -40,9 +39,6 @@ function navigate(next:NavigationTarget['tab']):void {
 function privacyNoticeContent():string {
   return `<div class="privacy-notice">${PRIVACY_NOTICE_SECTIONS.map(section=>`<h3>${escape(section.title)}</h3><p>${escape(section.text)}</p>`).join('')}<button data-link="support">WWG 문의 ↗</button></div>`;
 }
-function privacyNoticeView():string {
-  return `<header class="topbar"><div class="brand">WWG</div></header><main class="content privacy-view"><section class="panel privacy-panel" aria-labelledby="privacy-title"><h1 id="privacy-title">${escape(PRIVACY_NOTICE_TITLE)}</h1><p>폴더 접근과 ChatGPT 연결을 시작하기 전에 아래 내용을 확인하세요.</p>${privacyNoticeContent()}<div class="privacy-actions"><button data-action="quit">종료</button><button class="primary" data-action="accept-privacy" ${privacyBusy?'disabled':''}>${privacyBusy?'확인 중…':'안내 확인 후 사용'}</button></div></section></main><footer><span>데이터 처리 안내 · 버전 ${PRIVACY_NOTICE_VERSION}</span><span>WWG ${escape(data.version)}</span></footer>`;
-}
 function logCard(job:Job):string {
   const pending=job.state==='pending';
   const active=job.state==='queued'||job.state==='running';
@@ -74,11 +70,10 @@ function connectionView():string {
   <h2>4. @WWG로 플러그인 활성화</h2><ol><li>웹 ChatGPT 대화에서 <strong>@WWG</strong>를 입력하고 WWG 플러그인을 선택해 활성화합니다.</li><li>원하는 파일·명령 작업을 요청합니다. 실행 결과와 필요한 승인은 WWG에서 확인합니다.</li></ol><p class="note">대화 중에는 WWG와 터널 연결을 유지하세요. WWG 플러그인 활성화 여부는 웹 ChatGPT에서 확인합니다.</p></section></div>`;
 }
 function settingsView():string {
-  return `<div class="section-heading"><div><h1>접근 설정</h1><p>사용할 폴더와 환경변수 이름만 지정합니다.</p></div></div><section class="panel settings-panel"><div class="panel-heading"><h2>접근 폴더</h2><button data-action="select-folders">+ 폴더 선택</button></div><p>여러 폴더를 한 번에 선택할 수 있습니다.</p><div class="folder-scopes">${data.folders.map(folder=>`<div><code>${folder.approvedFolders.map(relative=>escape(relative?folder.path+(data.runtime?.platform==='win32'?'\\':'/')+relative:folder.path)).join('<br>')}</code><button data-remove-folder="${folder.id}">접근 해제</button></div>`).join('')||'<p>허용한 폴더가 없습니다.</p>'}</div><p class="note">접근을 해제하면 대기·실행 중인 요청을 중지합니다. 실제 폴더와 파일은 삭제하지 않습니다.</p></section><section class="panel settings-panel"><h2>${escape(PRIVACY_NOTICE_TITLE)}</h2><details data-detail="privacy-notice" ${details.has('privacy-notice')?'open':''}><summary>안내 다시 보기</summary>${privacyNoticeContent()}</details></section><section class="panel settings-panel"><h2>OS 환경변수</h2><p>명령에 사용할 기존 환경변수의 이름만 허용합니다. .env 파일을 불러오는 기능은 없습니다.</p><form id="environment-form"><label for="environment-names">허용할 이름</label><div class="environment-input"><input id="environment-names" name="names" value="${escape(data.environmentNames.join(', '))}" placeholder="API_TOKEN, DATABASE_URL" spellcheck="false" autocomplete="off"><button type="submit">저장</button></div></form><p class="note">명령에서 요청한 허용 변수만 전달합니다. 이름만 저장하며 값은 실행 출력에서 숨깁니다.</p></section>${data.approvalMode==='automatic'?`<section class="panel settings-panel"><h2>자동승인</h2><p>${data.rememberAutomatic?'다음 실행에도 자동승인을 유지합니다.':'자동승인은 이번 실행에만 적용됩니다.'}</p><button data-action="automatic-options">유지 설정 변경</button></section>`:''}`;
+  return `<div class="section-heading"><div><h1>접근 설정</h1><p>사용할 폴더와 환경변수 이름만 지정합니다.</p></div></div><section class="panel settings-panel"><div class="panel-heading"><h2>접근 폴더</h2><button data-action="select-folders">+ 폴더 선택</button></div><p>여러 폴더를 한 번에 선택할 수 있습니다.</p><div class="folder-scopes">${data.folders.map(folder=>`<div><code>${folder.approvedFolders.map(relative=>escape(relative?folder.path+(data.runtime?.platform==='win32'?'\\':'/')+relative:folder.path)).join('<br>')}</code><button data-remove-folder="${folder.id}">접근 해제</button></div>`).join('')||'<p>허용한 폴더가 없습니다.</p>'}</div><p class="note">접근을 해제하면 대기·실행 중인 요청을 중지합니다. 실제 폴더와 파일은 삭제하지 않습니다.</p></section><section class="panel settings-panel"><h2>OS 환경변수</h2><p>명령에 사용할 기존 환경변수의 이름만 허용합니다. .env 파일을 불러오는 기능은 없습니다.</p><form id="environment-form"><label for="environment-names">허용할 이름</label><div class="environment-input"><input id="environment-names" name="names" value="${escape(data.environmentNames.join(', '))}" placeholder="API_TOKEN, DATABASE_URL" spellcheck="false" autocomplete="off"><button type="submit">저장</button></div></form><p class="note">명령에서 요청한 허용 변수만 전달합니다. 이름만 저장하며 값은 실행 출력에서 숨깁니다.</p></section><section class="panel settings-panel"><h2>${escape(PRIVACY_NOTICE_TITLE)}</h2><details data-detail="privacy-notice" ${details.has('privacy-notice')?'open':''}><summary>안내 보기</summary>${privacyNoticeContent()}</details></section>${data.approvalMode==='automatic'?`<section class="panel settings-panel"><h2>자동승인</h2><p>${data.rememberAutomatic?'다음 실행에도 자동승인을 유지합니다.':'자동승인은 이번 실행에만 적용됩니다.'}</p><button data-action="automatic-options">유지 설정 변경</button></section>`:''}`;
 }
 function render():void {
   if(!data)return;
-  if(!data.privacyNoticeAccepted){root.innerHTML=privacyNoticeView();return;}
   const inputs=[...root.querySelectorAll<HTMLInputElement>('form input')], focused=document.activeElement;
   const scroll=root.querySelector('.content')?.scrollTop??0;
   const pending=data.jobs.filter(job=>job.state==='pending').length, automatic=data.approvalMode==='automatic';
@@ -98,10 +93,6 @@ root.addEventListener('click',event=>{
   if(button.dataset.removeFolder){void action(()=>api.removeFolder(button.dataset.removeFolder!));return;}
   if(button.dataset.link){void action(()=>api.openConnectionLink(button.dataset.link as ConnectionLink));return;}
   switch(button.dataset.action){
-    case 'accept-privacy':
-      if(!privacyBusy)void action(async()=>{privacyBusy=true;render();try{await api.acceptPrivacyNotice(PRIVACY_NOTICE_VERSION);}finally{privacyBusy=false;render();}});
-      break;
-    case 'quit':void api.quit();break;
     case 'select-folders':void action(()=>api.selectFolders());break;
     case 'automatic':void action(()=>data.approvalMode==='automatic'?api.stopAutomatic():api.startAutomatic());break;
     case 'automatic-options':void action(()=>api.startAutomatic());break;

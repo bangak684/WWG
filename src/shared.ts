@@ -21,7 +21,6 @@ export interface Snapshot {
   folders: FolderScope[]; approvalMode: ApprovalMode; environmentNames: string[]; rememberAutomatic: boolean; jobs: Job[]; tasks: TaskSnapshot[];
   connected: boolean; paused: boolean; lastCall: number | null;
   canClearLogs: boolean;
-  privacyNoticeAccepted: boolean;
   endpoint: null; error: string | null;
   version: string; runtime?: { packaged: boolean; platform: string; arch: string };
 }
@@ -31,7 +30,6 @@ export interface TunnelStatus { installed: boolean; phase: 'stopped' | 'starting
 export type ConnectionLink = 'keys' | 'tunnels' | 'plugins' | 'download' | 'guide' | 'support';
 export interface NavigationTarget { tab: 'logs'|'connect'|'settings' }
 export interface WorkroomAPI {
-  acceptPrivacyNotice(version: number): Promise<void>; quit(): Promise<void>;
   snapshot(): Promise<Snapshot>; selectFolders(): Promise<void>; removeFolder(id: string): Promise<void>;
   startAutomatic(): Promise<void>; stopAutomatic(): Promise<void>;
   setEnvironmentNames(names: string[]): Promise<void>; clearLogs(): Promise<void>;

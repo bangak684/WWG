@@ -11,7 +11,6 @@ import { ensurePrivateDirectory } from './private-io';
 import { menuBarTemplate } from './menu-bar';
 import { menuBarIcon } from './menu-bar-icon';
 import { APP_VERSION, type NavigationTarget } from '../shared';
-import { PRIVACY_NOTICE_VERSION } from '../privacy-notice';
 
 app.setName('WWG');
 // Keep existing project settings and the single-instance lock across the rename.
@@ -80,10 +79,7 @@ else {
       return result.response === 1;
     };
     handle('snapshot', () => ({ ...service.snapshot(), version: app.isPackaged?app.getVersion():APP_VERSION, runtime: { packaged: app.isPackaged, platform: process.platform, arch: process.arch } }));
-    handle('privacy:accept', version => service.acceptPrivacyNotice(z.literal(PRIVACY_NOTICE_VERSION).parse(version)));
-    handle('app:quit', () => { app.quit(); });
     const selectFolders = async (): Promise<void> => {
-      service.requirePrivacyNotice();
       const result = await dialog.showOpenDialog(window!, { title:'접근할 폴더 선택', buttonLabel:'접근 허용', properties:['openDirectory','multiSelections'] });
       if (!result.canceled) await service.addFolders(result.filePaths);
     };
@@ -91,7 +87,6 @@ else {
     handle('folder:remove', value => service.removeFolder(id.parse(value)));
     let automaticDialog = false;
     const startAutomatic = async (): Promise<void> => {
-      service.requirePrivacyNotice();
       if (automaticDialog) return;
       const folders = structuredClone(store.data.folders);
       if (!folders.length) throw new Error('접근 폴더를 먼저 선택하세요.');
@@ -120,7 +115,7 @@ else {
     handle('pause', value => service.setPaused(z.boolean().parse(value)));
     handle('tunnel:status', () => tunnel!.snapshot());
     handle('tunnel:inspect', () => tunnel!.inspect());
-    handle('tunnel:start', (tunnelId,key) => { service.requirePrivacyNotice(); if (service.paused) throw new Error('도구 연결을 재개한 뒤 터널을 연결하세요.'); return tunnel!.start(tunnelId,key,service.endpoint); });
+    handle('tunnel:start', (tunnelId,key) => { if (service.paused) throw new Error('도구 연결을 재개한 뒤 터널을 연결하세요.'); return tunnel!.start(tunnelId,key,service.endpoint); });
     handle('tunnel:stop', () => tunnel!.stop());
     handle('tunnel:copy-id', () => { const tunnelId = tunnel!.snapshot().tunnelId; if (!tunnelId) throw new Error('터널 ID를 먼저 설정하세요.'); clipboard.writeText(tunnelId); });
     const links = { keys: 'https://platform.openai.com/settings/organization/api-keys', tunnels: 'https://platform.openai.com/settings/organization/tunnels', plugins: 'https://chatgpt.com/plugins', download: 'https://github.com/openai/tunnel-client/releases/latest', guide: 'https://developers.openai.com/api/docs/guides/secure-mcp-tunnels', support:'https://github.com/bangak684/WWG/issues' };
@@ -161,7 +156,7 @@ else {
       refreshMenu=(): void => {
         if(!tray||tray.isDestroyed()||shuttingDown)return;
         const snapshot=service.snapshot(), status=tunnel!.snapshot();
-        const key=JSON.stringify([snapshot.privacyNoticeAccepted,snapshot.connected,snapshot.paused,snapshot.error,status.phase,snapshot.folders,snapshot.approvalMode,snapshot.rememberAutomatic,snapshot.jobs.map(j=>[j.id,j.projectId,j.state]),snapshot.tasks.map(t=>[t.id,t.state])]);
+        const key=JSON.stringify([snapshot.connected,snapshot.paused,snapshot.error,status.phase,snapshot.folders,snapshot.approvalMode,snapshot.rememberAutomatic,snapshot.jobs.map(j=>[j.id,j.projectId,j.state]),snapshot.tasks.map(t=>[t.id,t.state])]);
         if(key===previousMenu)return;
         previousMenu=key;
         const template=menuBarTemplate(snapshot,status,{
@@ -178,7 +173,7 @@ else {
     }
     if(process.platform!=='darwin')Menu.setApplicationMenu(null);
     await createWindow();
-    if(process.platform==='darwin'&&service.privacyNoticeAccepted&&store.data.folders.length)app.dock?.hide();
+    if(process.platform==='darwin'&&store.data.folders.length)app.dock?.hide();
     else await showWorkspace();
   }).catch(err => { dialog.showErrorBox('WWG 시작 오류', (err as Error).message); app.quit(); });
   app.on('window-all-closed', () => { if(!tray&&!shuttingDown)app.quit(); });

@@ -15,7 +15,6 @@ import { requireSafeRoot } from './secret-policy';
 import { emptyTaskCounts, taskState } from './tasks';
 import { WindowsCommandWorkspace } from './windows-command';
 import { visibleLogs } from './log-retention';
-import { PRIVACY_NOTICE_VERSION } from '../privacy-notice';
 export { commandEnvironment } from './command-environment';
 
 interface Runtime { process: ChildProcess; output: string; bytes: number; cancelled: boolean; reason: string; killTimer?: NodeJS.Timeout }
@@ -41,15 +40,6 @@ export class Workspace extends EventEmitter {
     store.on('change', () => this.changed());
   }
   changed(): void { for (const wake of this.waiters) wake(); this.emit('change'); }
-  get privacyNoticeAccepted(): boolean { return this.store.data.settings.privacyNoticeVersion === PRIVACY_NOTICE_VERSION; }
-  requirePrivacyNotice(): void {
-    if (!this.privacyNoticeAccepted) throw new Error('WWG에서 개인정보 및 데이터 처리 안내를 먼저 확인하세요.');
-  }
-  async acceptPrivacyNotice(version: number): Promise<void> {
-    if (version !== PRIVACY_NOTICE_VERSION || this.closing) throw new Error('현재 데이터 처리 안내를 다시 확인하세요.');
-    await this.store.update(d => { d.settings.privacyNoticeVersion = version; });
-    this.changed();
-  }
   /** Holds a tool response while automatic work runs, so fast jobs return their final state in one call. */
   async settle(id: string, ms: number): Promise<Job> {
     const active = (): boolean => { const state = this.job(id).state; return state === 'queued' || state === 'running'; };
@@ -73,12 +63,11 @@ export class Workspace extends EventEmitter {
   }
   snapshot(): Snapshot {
     const settings = this.store.data.settings;
-    if (!this.privacyNoticeAccepted) return { folders:[], approvalMode:'review', environmentNames:[], rememberAutomatic:false, jobs:[], tasks:[], canClearLogs:false, privacyNoticeAccepted:false, connected:!!this.endpoint, paused:this.paused, lastCall:null, endpoint:null, error:this.error, version:APP_VERSION };
     const jobs = visibleLogs(this.store.data.jobs).map(job => this.jobSnapshot(job.id));
     const visibleTasks = new Set(jobs.map(job => job.taskId));
     const tasks = this.taskSnapshots().filter(task => visibleTasks.has(task.id) || task.totalRequests === 0);
     const canClearLogs = this.store.data.jobs.some(job => terminal(job.state)) || this.store.data.tasks.some(task => ['done','failed','cancelled'].includes(taskState(task)));
-    return { folders: structuredClone(this.store.data.folders), ...settings, jobs, tasks, canClearLogs, privacyNoticeAccepted:true, connected: !!this.endpoint, paused: this.paused, lastCall: this.lastCall, endpoint: null, error: this.error, version: APP_VERSION };
+    return { folders: structuredClone(this.store.data.folders), ...settings, jobs, tasks, canClearLogs, connected: !!this.endpoint, paused: this.paused, lastCall: this.lastCall, endpoint: null, error: this.error, version: APP_VERSION };
   }
   private task(id: string): Task {
     const task = this.store.data.tasks.find(task => task.id === id);
@@ -94,7 +83,6 @@ export class Workspace extends EventEmitter {
   }
   taskSnapshots(): TaskSnapshot[] { return this.store.data.tasks.map(task=>this.taskSnapshot(task.id)).sort((a,b)=>b.updatedAt-a.updatedAt); }
   async createTask(requestId: string, title: string): Promise<TaskSnapshot> {
-    this.requirePrivacyNotice();
     if (this.paused || this.closing) throw new Error('WWG 연결이 일시 정지되어 있습니다.');
     const trimmed = title.trim();
     if (!trimmed || trimmed.length > 200 || /[\x00-\x1f\x7f]/.test(trimmed)) throw new Error('작업 이름은 1~200자의 한 줄로 지정하세요.');
@@ -121,7 +109,6 @@ export class Workspace extends EventEmitter {
     d.jobs.unshift(job);
   }
   async beginTaskRead(taskId: string, tool: string, label: string): Promise<string> {
-    this.requirePrivacyNotice();
     const now=Date.now(), id=randomUUID();
     await this.store.update(d=>{
       this.requireTaskAvailable(taskId);
@@ -166,15 +153,13 @@ export class Workspace extends EventEmitter {
   }
   private receiptJob(r: Receipt): Job { return { ...r, label: '정리된 실행 기록', output: '이 요청은 이미 처리되었습니다. 원문·출력 기록은 정리되어 재실행하지 않습니다.' }; }
   private requireWritable(id: string): void {
-    this.requirePrivacyNotice();
     if (this.paused || this.closing) throw new Error('WWG 연결이 일시 정지되어 있습니다.');
     if (this.revoked.has(id) || !this.project(id).writable) throw new Error('실행 폴더 권한이 변경되었습니다. 다시 요청하세요.');
   }
   private allowed(job: Job): boolean {
-    return this.privacyNoticeAccepted && !this.paused && !this.closing && !this.revoked.has(job.projectId) && !this.cancellations.has(job.id) && (!job.taskId || this.task(job.taskId).cancelledAt === undefined) && !!this.store.data.folders.find(folder => folder.id === job.projectId);
+    return !this.paused && !this.closing && !this.revoked.has(job.projectId) && !this.cancellations.has(job.id) && (!job.taskId || this.task(job.taskId).cancelledAt === undefined) && !!this.store.data.folders.find(folder => folder.id === job.projectId);
   }
   async addFolders(paths: string[]): Promise<void> {
-    this.requirePrivacyNotice();
     const folders: FolderScope[] = [];
     const privateRoot = await fs.realpath(this.dataDir).catch(() => path.resolve(this.dataDir));
     const home = await fs.realpath(os.homedir());
@@ -204,7 +189,6 @@ export class Workspace extends EventEmitter {
   async enableAutomatic(remember: boolean, expectedFolders: FolderScope[]): Promise<void> {
     const expected = JSON.stringify(expectedFolders);
     const check = (): void => {
-      this.requirePrivacyNotice();
       if (JSON.stringify(this.store.data.folders) !== expected || !this.store.data.folders.length) throw new Error('접근 폴더가 변경되었습니다. 자동승인을 다시 시작하세요.');
       if (this.paused || this.closing) throw new Error('연결을 재개한 뒤 자동승인을 시작하세요.');
     };
@@ -237,7 +221,6 @@ export class Workspace extends EventEmitter {
     } finally { for (const id of ids) this.revoked.delete(id); this.changed(); }
   }
   async setEnvironmentNames(raw: unknown): Promise<void> {
-    this.requirePrivacyNotice();
     const names = validateEnvironmentNames(raw), ids = this.store.data.folders.map(folder => folder.id);
     for (const id of ids) this.revoked.add(id);
     try {
@@ -267,7 +250,6 @@ export class Workspace extends EventEmitter {
     return this.jobSnapshot(receipt.id);
   }
   private async accept(input: Proposal): Promise<Job> {
-    this.requirePrivacyNotice();
     this.project(input.projectId);
     // Identity is the caller's request; a patch's derived content depends on the file and is excluded.
     const requestHash = fingerprint(input);
@@ -315,7 +297,6 @@ export class Workspace extends EventEmitter {
     this.changed(); this.pump();
   }
   private pump(): void {
-    if (!this.privacyNoticeAccepted) return;
     if (this.paused || this.closing) return;
     for (const job of [...this.store.data.jobs].reverse()) {
       if (this.active.size >= 2) break;

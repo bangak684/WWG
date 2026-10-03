@@ -8,9 +8,8 @@ import { environmentNames } from './command-environment';
 import { emptyTaskCounts, syncTaskCounts } from './tasks';
 import { STORED_LOG_LIMIT } from '../shared';
 import { retainHistory } from './log-retention';
-import { PRIVACY_NOTICE_VERSION } from '../privacy-notice';
 
-export interface Data { version: 2; folders: FolderScope[]; settings: { approvalMode: ApprovalMode; environmentNames: string[]; rememberAutomatic: boolean; privacyNoticeVersion: number }; jobs: Job[]; receipts: Receipt[]; tasks: Task[] }
+export interface Data { version: 2; folders: FolderScope[]; settings: { approvalMode: ApprovalMode; environmentNames: string[]; rememberAutomatic: boolean }; jobs: Job[]; receipts: Receipt[]; tasks: Task[] }
 type Mutation = (draft: Data) => void;
 const id = z.string().uuid();
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
@@ -29,10 +28,10 @@ const receipts = z.array(receipt).max(STORED_LOG_LIMIT).default([]);
 const legacyReceipts = z.array(receipt).max(10000).default([]);
 const count = z.number().int().min(0);
 const tasks = z.array(z.object({ id, title: z.string().trim().min(1).max(200), counts: z.object({ pending:count, queued:count, running:count, done:count, failed:count, declined:count, cancelled:count }).default(emptyTaskCounts), createdAt:z.number(), updatedAt:z.number(), cancelledAt:z.number().optional() })).max(100).default([]);
-const defaultSettings = (): Data['settings'] => ({ approvalMode: 'review', environmentNames: [], rememberAutomatic: false, privacyNoticeVersion: 0 });
+const defaultSettings = (): Data['settings'] => ({ approvalMode: 'review', environmentNames: [], rememberAutomatic: false });
 const schema = z.object({
   version: z.literal(2), folders,
-  settings: z.object({ approvalMode: z.enum(['review','automatic']).default('review'), environmentNames: environmentNames.default([]), rememberAutomatic: z.boolean().default(false), privacyNoticeVersion: z.number().int().min(0).default(0) }).default(defaultSettings),
+  settings: z.object({ approvalMode: z.enum(['review','automatic']).default('review'), environmentNames: environmentNames.default([]), rememberAutomatic: z.boolean().default(false) }).default(defaultSettings),
   jobs, receipts, tasks
 });
 // Read the old 10,000-receipt format once; every subsequent write uses the new limit.
@@ -64,7 +63,7 @@ export class Store extends EventEmitter {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('설정과 실행 로그를 읽을 수 없습니다. 원본을 보존했습니다.');
     }
     // Only a user's explicit persistent opt-in restores authority. Old jobs are never replayed.
-    if (!(this.data.settings.privacyNoticeVersion === PRIVACY_NOTICE_VERSION && this.data.settings.approvalMode === 'automatic' && this.data.settings.rememberAutomatic && this.data.folders.length)) {
+    if (!(this.data.settings.approvalMode === 'automatic' && this.data.settings.rememberAutomatic && this.data.folders.length)) {
       this.data.settings.approvalMode = 'review'; this.data.settings.rememberAutomatic = false;
     }
     const beforeRestart = structuredClone(this.data.jobs);

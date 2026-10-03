@@ -20,7 +20,7 @@ const task = (title,counts=emptyTaskCounts()) => ({ id:randomUUID(), title, coun
 const settings = { approvalMode:'review', environmentNames:[], rememberAutomatic:false };
 const workspaces = [];
 const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'wwg-log-retention-')));
-const storeAt = async name => { const dir=path.join(base,name); await fs.mkdir(dir); const store=new Store(path.join(dir,'workspace.json')); await store.load(); await store.update(d=>{d.settings.privacyNoticeVersion=1;}); return store; };
+const storeAt = async name => { const dir=path.join(base,name); await fs.mkdir(dir); const store=new Store(path.join(dir,'workspace.json')); await store.load(); return store; };
 const workspaceFor = (store,name) => { const workspace=new Workspace(store,path.join(base,name)); workspaces.push(workspace); return workspace; };
 
 try {
