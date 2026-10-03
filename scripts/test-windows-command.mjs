@@ -6,6 +6,8 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { buildWindowsRunner } from './build-windows-runner.mjs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const bundle = path.join(root, 'out', 'main', 'windows-command-test.cjs');
@@ -13,6 +15,7 @@ await build({ entryPoints: [path.join(root, 'src', 'main', 'windows-command.ts')
 const { WindowsCommandWorkspace } = createRequire(import.meta.url)(bundle);
 if (process.platform === 'win32') await buildWindowsRunner();
 let passed = 0;
+const failures = [];
 async function test(name, fn) {
   const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'wwg-windows-test-')));
   const source = path.join(base, 'source'), second = path.join(base, 'second'), data = path.join(base, 'private'), outside = path.join(base, 'outside');
@@ -22,6 +25,7 @@ async function test(name, fn) {
   let workspace;
   const fixture = { source, second, data, outside, prepare: async (authorized = () => true) => workspace = await WindowsCommandWorkspace.prepare([source, second], data, authorized, [data]) };
   try { await fn(fixture); passed++; console.log(`PASS ${name}`); }
+  catch (error) { failures.push(name); console.error(`FAIL ${name}: ${error.stack}`); }
   finally { await workspace?.dispose(); await fs.rm(base, { recursive: true, force: true }); }
 }
 const exists = async target => { try { await fs.lstat(target); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; } };
@@ -182,6 +186,14 @@ if (process.platform === 'win32') {
   await test('LPAC cmd can move and delete copied files and folders', async ({ source, prepare }) => {
     const workspace = await prepare();
     const result = await execute(workspace, source, 'mkdir bulk & move safe.txt bulk\\moved.txt & del bulk\\moved.txt & rmdir bulk');
+    if (result.code !== 0) {
+      const file = workspace.mappedPath(path.join(source, 'bulk', 'moved.txt'));
+      for (const executable of ['icacls.exe', 'attrib.exe']) {
+        const diagnostic = await promisify(execFile)(path.join(process.env.SystemRoot, 'System32', executable), [file]);
+        console.log(`${executable}: ${diagnostic.stdout}`);
+      }
+      console.log(`mode: ${(await fs.stat(file)).mode.toString(8)}`);
+    }
     assert.equal(result.code, 0, result.output);
     await workspace.synchronize();
     assert.equal(await exists(path.join(source, 'safe.txt')), false);
@@ -210,3 +222,4 @@ if (process.platform === 'win32') {
 } else console.log('Windows native LPAC tests run on Windows CI.');
 await fs.rm(bundle, { force: true });
 console.log(`${passed} Windows command checks passed.`);
+assert.deepEqual(failures, [], 'Windows command verification failed.');
