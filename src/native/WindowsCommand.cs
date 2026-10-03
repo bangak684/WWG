@@ -94,11 +94,11 @@ internal static class WindowsCommand {
     static void GrantEntry(string target, SecurityIdentifier identity, bool directory) {
         if (directory) {
             var security = Directory.GetAccessControl(target);
-            security.AddAccessRule(new FileSystemAccessRule(identity, FileSystemRights.Modify | FileSystemRights.DeleteSubdirectoriesAndFiles, InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
+            security.AddAccessRule(new FileSystemAccessRule(identity, FileSystemRights.FullControl, InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
             Directory.SetAccessControl(target, security);
         } else {
             var security = File.GetAccessControl(target);
-            security.AddAccessRule(new FileSystemAccessRule(identity, FileSystemRights.Modify, AccessControlType.Allow));
+            security.AddAccessRule(new FileSystemAccessRule(identity, FileSystemRights.FullControl, AccessControlType.Allow));
             File.SetAccessControl(target, security);
         }
         IntPtr descriptor = IntPtr.Zero;

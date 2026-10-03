@@ -193,6 +193,10 @@ if (process.platform === 'win32') {
         console.log(`${executable}: ${diagnostic.stdout}`);
       }
       console.log(`mode: ${(await fs.stat(file)).mode.toString(8)}`);
+      for (const command of ['del /f /q bulk\\moved.txt', 'powershell -NoLogo -NoProfile -NonInteractive -Command "[IO.File]::Delete(\'bulk\\moved.txt\')"']) {
+        const retry = await execute(workspace, source, command);
+        console.log(`delete diagnostic: ${retry.code}: ${retry.output}`);
+      }
     }
     assert.equal(result.code, 0, result.output);
     await workspace.synchronize();
