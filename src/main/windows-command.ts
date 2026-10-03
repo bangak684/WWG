@@ -209,7 +209,7 @@ export class WindowsCommandWorkspace {
     requireWindowsRunner(); check(this.authorized);
     const child = spawn(windowsRunnerPath(), [], { windowsHide: true, shell: false, env: launcherEnvironment(), stdio: ['pipe', 'pipe', 'pipe'] });
     child.stdin!.on('error', () => {}); // A rejected launcher may close stdin before the JSON arrives.
-    child.stdin!.end(JSON.stringify({ profile: this.profile, stage: this.stage, cwd: this.mappedPath(cwd), command: this.mappedCommand(command), powershell: path.join(this.stage, 'runtime', 'PowerShell', 'powershell.exe'), environment: this.environment(selected), originalRoots: this.mappings.map(mapping => mapping.original), excludedPaths: this.mappings.flatMap(mapping => mapping.excluded) }));
+    child.stdin!.end(JSON.stringify({ profile: this.profile, stage: this.stage, cwd: this.mappedPath(cwd), command: this.mappedCommand(command), powershell: path.join(this.stage, 'runtime', 'PowerShell', 'powershell.exe'), parentPid: process.pid, environment: this.environment(selected), originalRoots: this.mappings.map(mapping => mapping.original), excludedPaths: this.mappings.flatMap(mapping => mapping.excluded) }));
     return child;
   }
 

@@ -51,6 +51,7 @@ internal static class WindowsCommand {
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool QueryInformationJobObject(IntPtr job, int info, out Accounting accounting, int size, IntPtr returned);
     [DllImport("kernel32.dll", SetLastError = true)] static extern uint ResumeThread(IntPtr thread);
     [DllImport("kernel32.dll", SetLastError = true)] static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint id);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetExitCodeProcess(IntPtr process, out uint code);
     [DllImport("kernel32.dll")] static extern bool TerminateProcess(IntPtr process, uint code);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
@@ -72,6 +73,7 @@ internal static class WindowsCommand {
         public string cwd { get; set; }
         public string command { get; set; }
         public string powershell { get; set; }
+        public uint parentPid { get; set; }
         public Dictionary<string, string> environment { get; set; }
         public string[] originalRoots { get; set; }
         public string[] excludedPaths { get; set; }
@@ -172,6 +174,12 @@ internal static class WindowsCommand {
         string stage = Path.GetFullPath(request.stage).TrimEnd(Path.DirectorySeparatorChar);
         string cwd = Path.GetFullPath(request.cwd).TrimEnd(Path.DirectorySeparatorChar);
         if (!Within(cwd, stage) || stage == Path.GetPathRoot(stage).TrimEnd(Path.DirectorySeparatorChar)) throw new ArgumentException("Invalid workspace.");
+        IntPtr parent = OpenProcess(0x00100000, false, request.parentPid);
+        if (parent == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+        // If WWG is terminated forcibly, closing this launcher also closes its job.
+        // The OS releases this one lifetime handle when the launcher exits.
+        var watch = new System.Threading.Thread(delegate() { if (WaitForSingleObject(parent, uint.MaxValue) == 0) Environment.Exit(125); });
+        watch.IsBackground = true; watch.Start();
         IntPtr sid = IntPtr.Zero, attributes = IntPtr.Zero, job = IntPtr.Zero, token = IntPtr.Zero;
         var allocated = new List<IntPtr>(); var localSids = new List<IntPtr>();
         ProcessInfo process = new ProcessInfo(); bool resumed = false;

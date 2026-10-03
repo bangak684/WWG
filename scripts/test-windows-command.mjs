@@ -240,6 +240,15 @@ if (process.platform === 'win32') {
     await workspace.synchronize();
     assert.equal(await fs.readFile(path.join(source, 'node.txt'), 'utf8'), 'node-ok');
   });
+  await test('native descendants cannot regain ALL_APPLICATION_PACKAGES access', async ({ source, outside, prepare }) => {
+    const privateFile = path.join(outside, 'private.txt');
+    await fs.writeFile(privateFile, 'PRIVATE_ALL_PACKAGES_SENTINEL');
+    await promisify(execFile)(path.join(process.env.SystemRoot, 'System32', 'icacls.exe'), [privateFile, '/grant', '*S-1-15-2-1:RX']);
+    const workspace = await prepare();
+    const result = await execute(workspace, source, `node -e "try{process.stdout.write(require('fs').readFileSync(process.env.HOST_PATH,'utf8'))}catch{process.exit(13)}"`, { HOST_PATH: privateFile });
+    assert.equal(result.code, 13, result.output);
+    assert.ok(!result.output.includes('PRIVATE_ALL_PACKAGES_SENTINEL'));
+  });
   await test('closing the job stops background descendants before publication', async ({ source, prepare }) => {
     const workspace = await prepare();
     const result = await execute(workspace, source, `cmd /d /c 'start "" /b powershell -NoLogo -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 2; [IO.File]::WriteAllText(''orphan.txt'',''BAD'')"'`);
